@@ -1,0 +1,20 @@
+# Go
+/daemon/bin/
+*.test
+*.out
+
+# Sessão do WhatsApp e dados locais — NUNCA versionar
+*.db
+*.db-journal
+*.sqlite
+/data/
+session/
+
+# Editor / sistema
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Claude Code (local)
+.claude/settings.local.json
