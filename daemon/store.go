@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -39,7 +40,7 @@ CREATE INDEX IF NOT EXISTS messages_chat_ts ON messages (chat, ts);
 `
 
 func OpenMsgStore(path string) (*MsgStore, error) {
-	db, err := sql.Open("sqlite3", "file:"+path+"?_journal_mode=WAL&_busy_timeout=5000")
+	db, err := sql.Open("sqlite3", sqliteDSN(path, "_journal_mode=WAL&_busy_timeout=5000"))
 	if err != nil {
 		return nil, err
 	}
@@ -52,6 +53,42 @@ func OpenMsgStore(path string) (*MsgStore, error) {
 }
 
 func (s *MsgStore) Close() error { return s.db.Close() }
+
+// sqliteDSN builds a file: URI, escaping the characters that would end the path.
+func sqliteDSN(path, params string) string {
+	esc := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(path)
+	return "file:" + esc + "?" + params
+}
+
+// HasChat reports whether a chat exists.
+func (s *MsgStore) HasChat(ctx context.Context, jid string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chats WHERE jid = ?`, jid).Scan(&n)
+	return n > 0
+}
+
+// RestoreUnread flags messages as unread again after read receipts failed.
+func (s *MsgStore) RestoreUnread(ctx context.Context, jid string, ids []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx, `UPDATE messages SET unread = 1 WHERE chat = ? AND id = ?`, jid, id); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE chats SET unread = (
+		SELECT COUNT(*) FROM messages WHERE chat = ? AND unread = 1) WHERE jid = ?`, jid, jid); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
 // AddMessage stores a message and updates the chat preview. When unread is true
 // and the message is new, the chat unread counter is incremented.
@@ -200,6 +237,9 @@ func (s *MsgStore) Chats(ctx context.Context) ([]Chat, error) {
 		if err := rows.Scan(&c.JID, &c.Name, &c.Unread, &c.Last, &c.LastKind, &c.TS); err != nil {
 			return nil, err
 		}
+		if c.Name == "" {
+			c.Name = fallbackName(c.JID)
+		}
 		chats = append(chats, c)
 	}
 	return chats, rows.Err()
@@ -233,4 +273,12 @@ func (s *MsgStore) Clear(ctx context.Context) error {
 	defer s.mu.Unlock()
 	_, err := s.db.ExecContext(ctx, `DELETE FROM messages; DELETE FROM chats;`)
 	return err
+}
+
+// fallbackName shows the phone number of a user chat with no known name.
+func fallbackName(jid string) string {
+	if user, ok := strings.CutSuffix(jid, "@s.whatsapp.net"); ok && user != "" {
+		return "+" + user
+	}
+	return ""
 }

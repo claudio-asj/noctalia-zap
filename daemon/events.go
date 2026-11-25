@@ -47,6 +47,9 @@ type Message struct {
 type MessageEvent struct {
 	Type string `json:"type"` // "message"
 	Message
+	// Backlog marks messages delivered late (offline sync, old timestamps);
+	// the plugin should not notify for them.
+	Backlog bool `json:"backlog,omitempty"`
 }
 
 type HistoryEvent struct {

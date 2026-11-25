@@ -26,6 +26,10 @@ const (
 	maxHistoryLimit = 500
 	maxTextLength   = 65536
 	chatsDebounce   = 300 * time.Millisecond
+	// Messages older than this when they arrive are backlog, not news.
+	backlogAge = 5 * time.Minute
+	// After pairing, the library reconnects on its own; if that fails we retry once.
+	pairWatchdog = 30 * time.Second
 )
 
 type Config struct {
@@ -42,20 +46,26 @@ type Daemon struct {
 	emit      *Emitter
 	quit      context.CancelFunc
 
+	// lifecycle serializes Start, login and logout so clients are never swapped concurrently.
+	lifecycle sync.Mutex
+	// statusMu keeps the stored status and the emitted status in the same order.
+	statusMu sync.Mutex
+	state    string
+	detail   string
+
 	mu          sync.Mutex
 	client      *whatsmeow.Client
-	state       string
-	detail      string
 	pairing     bool
+	offline     bool // between OfflineSyncPreview and OfflineSyncCompleted
 	chatsTimer  *time.Timer
 	nameLookups map[string]bool
 }
 
-func NewDaemon(cfg Config, container *sqlstore.Container, store *MsgStore, emit *Emitter, quit context.CancelFunc) *Daemon {
+func NewDaemon(cfg Config, container *sqlstore.Container, msgs *MsgStore, emit *Emitter, quit context.CancelFunc) *Daemon {
 	return &Daemon{
 		cfg:         cfg,
 		container:   container,
-		store:       store,
+		store:       msgs,
 		emit:        emit,
 		quit:        quit,
 		nameLookups: map[string]bool{},
@@ -65,10 +75,16 @@ func NewDaemon(cfg Config, container *sqlstore.Container, store *MsgStore, emit 
 func (d *Daemon) qrPath() string { return filepath.Join(d.cfg.DataDir, "qr.png") }
 
 func (d *Daemon) setStatus(state, detail string) {
-	d.mu.Lock()
+	d.statusMu.Lock()
+	defer d.statusMu.Unlock()
 	d.state, d.detail = state, detail
-	d.mu.Unlock()
 	d.emit.Status(state, detail)
+}
+
+func (d *Daemon) getStatus() (string, string) {
+	d.statusMu.Lock()
+	defer d.statusMu.Unlock()
+	return d.state, d.detail
 }
 
 func (d *Daemon) getClient() *whatsmeow.Client {
@@ -77,8 +93,23 @@ func (d *Daemon) getClient() *whatsmeow.Client {
 	return d.client
 }
 
+// ownJID returns the logged-in JID, or an empty JID. Store.ID can be cleared by
+// another goroutine on logout, so it is read once.
+func ownJID(c *whatsmeow.Client) types.JID {
+	if c == nil || c.Store == nil {
+		return types.JID{}
+	}
+	id := c.Store.ID
+	if id == nil {
+		return types.JID{}
+	}
+	return id.ToNonAD()
+}
+
 // Start loads the stored device and either reconnects or starts QR pairing.
 func (d *Daemon) Start(ctx context.Context) error {
+	d.lifecycle.Lock()
+	defer d.lifecycle.Unlock()
 	device, err := d.container.GetFirstDevice(ctx)
 	if err != nil {
 		return fmt.Errorf("load device: %w", err)
@@ -86,10 +117,16 @@ func (d *Daemon) Start(ctx context.Context) error {
 	d.newClient(device)
 	d.emitChats(ctx)
 	if device.ID == nil {
-		return d.startPairing(ctx)
+		return d.startPairing()
 	}
 	d.setStatus(StateConnecting, "")
-	return d.getClient().Connect()
+	// With InitialAutoReconnect the client keeps retrying in the background
+	// even when this first attempt fails (e.g. no network yet at login).
+	if err := d.getClient().Connect(); err != nil {
+		log.Printf("connect: %v (retrying)", err)
+		d.setStatus(StateConnecting, "reconnecting")
+	}
+	return nil
 }
 
 func (d *Daemon) Stop() {
@@ -102,15 +139,22 @@ func (d *Daemon) Stop() {
 func (d *Daemon) newClient(device *store.Device) {
 	c := whatsmeow.NewClient(device, d.cfg.WALog)
 	c.EnableAutoReconnect = true
+	c.InitialAutoReconnect = true
 	c.AddEventHandler(d.handleEvent)
 	d.mu.Lock()
+	old := d.client
 	d.client = c
 	d.mu.Unlock()
+	if old != nil {
+		old.RemoveEventHandlers()
+		old.Disconnect()
+	}
 }
 
 // startPairing requests a QR channel and connects. QR codes are written as PNG
-// into the data directory and announced with a "qr" event.
-func (d *Daemon) startPairing(ctx context.Context) error {
+// into the data directory and announced with a "qr" event. The caller holds
+// d.lifecycle and has just created a fresh client.
+func (d *Daemon) startPairing() error {
 	d.mu.Lock()
 	if d.pairing {
 		d.mu.Unlock()
@@ -120,19 +164,24 @@ func (d *Daemon) startPairing(ctx context.Context) error {
 	c := d.client
 	d.mu.Unlock()
 
-	ch, err := c.GetQRChannel(ctx)
-	if err != nil {
+	stopPairing := func() {
 		d.mu.Lock()
 		d.pairing = false
 		d.mu.Unlock()
+	}
+	ch, err := c.GetQRChannel(context.Background())
+	if err != nil {
+		stopPairing()
 		return fmt.Errorf("qr channel: %w", err)
 	}
 	d.setStatus(StateConnecting, "")
 	if err := c.Connect(); err != nil {
-		d.mu.Lock()
-		d.pairing = false
-		d.mu.Unlock()
-		return fmt.Errorf("connect: %w", err)
+		stopPairing()
+		c.Disconnect()
+		log.Printf("connect: %v", err)
+		// The plugin can call `login` again; it creates a new client.
+		d.setStatus(StateLoggedOut, "connect_failed")
+		return nil
 	}
 	go d.pairLoop(c, ch)
 	return nil
@@ -141,11 +190,16 @@ func (d *Daemon) startPairing(ctx context.Context) error {
 func (d *Daemon) pairLoop(c *whatsmeow.Client, ch <-chan whatsmeow.QRChannelItem) {
 	defer func() {
 		d.mu.Lock()
-		d.pairing = false
+		if d.client == c {
+			d.pairing = false
+		}
 		d.mu.Unlock()
 		_ = os.Remove(d.qrPath())
 	}()
 	for item := range ch {
+		if d.getClient() != c {
+			continue // replaced by a newer login attempt; drain only
+		}
 		switch item.Event {
 		case whatsmeow.QRChannelEventCode:
 			if err := d.writeQR(item.Code); err != nil {
@@ -157,6 +211,13 @@ func (d *Daemon) pairLoop(c *whatsmeow.Client, ch <-chan whatsmeow.QRChannelItem
 			d.emit.Emit(QREvent{Type: "qr", PNG: d.qrPath()})
 		case whatsmeow.QRChannelSuccess.Event:
 			d.setStatus(StateConnecting, "paired")
+			time.AfterFunc(pairWatchdog, func() {
+				if d.getClient() == c && ownJID(c).User != "" && !c.IsConnected() {
+					if err := c.Connect(); err != nil {
+						log.Printf("connect after pairing: %v", err)
+					}
+				}
+			})
 		case whatsmeow.QRChannelTimeout.Event:
 			c.Disconnect()
 			d.setStatus(StateLoggedOut, "qr_timeout")
@@ -192,6 +253,12 @@ func (d *Daemon) writeQR(code string) error {
 	return nil
 }
 
+func (d *Daemon) setOffline(v bool) {
+	d.mu.Lock()
+	d.offline = v
+	d.mu.Unlock()
+}
+
 func (d *Daemon) handleEvent(raw any) {
 	ctx := context.Background()
 	switch evt := raw.(type) {
@@ -200,7 +267,10 @@ func (d *Daemon) handleEvent(raw any) {
 		d.scheduleChats()
 	case *events.Disconnected:
 		// Auto reconnect is on for logged-in sessions; report it so the UI can show it.
-		if c := d.getClient(); c != nil && c.Store.ID != nil {
+		// Events are dispatched in goroutines, so a late Disconnected may arrive after
+		// the reconnection already happened.
+		d.setOffline(false)
+		if c := d.getClient(); ownJID(c).User != "" && !c.IsConnected() {
 			d.setStatus(StateConnecting, "reconnecting")
 		}
 	case *events.KeepAliveTimeout:
@@ -209,6 +279,10 @@ func (d *Daemon) handleEvent(raw any) {
 		d.setStatus(StateConnected, "")
 	case *events.PairSuccess:
 		d.setStatus(StateConnecting, "paired")
+	case *events.OfflineSyncPreview:
+		d.setOffline(evt.Messages > 0)
+	case *events.OfflineSyncCompleted:
+		d.setOffline(false)
 	case *events.LoggedOut:
 		d.onLoggedOut(ctx, "logged_out_remotely")
 	case *events.StreamReplaced:
@@ -224,9 +298,19 @@ func (d *Daemon) handleEvent(raw any) {
 		d.handleMessage(ctx, evt, true)
 	case *events.HistorySync:
 		d.handleHistory(ctx, evt)
+	case *events.Contact:
+		if evt.Action != nil {
+			name := evt.Action.GetFullName()
+			if name == "" {
+				name = evt.Action.GetFirstName()
+			}
+			d.renameUserChat(ctx, evt.JID, name, true)
+		}
+	case *events.PushName:
+		d.renameUserChat(ctx, evt.JID, evt.NewPushName, false)
 	case *events.MarkChatAsRead:
 		if evt.Action.GetRead() {
-			if _, err := d.store.TakeUnread(ctx, evt.JID.ToNonAD().String()); err != nil {
+			if _, err := d.store.TakeUnread(ctx, d.chatKey(ctx, evt.JID).String()); err != nil {
 				log.Printf("mark read: %v", err)
 			}
 			d.scheduleChats()
@@ -250,11 +334,28 @@ func ignoredChat(jid types.JID) bool {
 	return jid.IsEmpty()
 }
 
+// chatKey normalizes a chat JID: device part removed and LIDs mapped to phone
+// numbers when the mapping is known, so the same person is a single chat.
+func (d *Daemon) chatKey(ctx context.Context, jid types.JID) types.JID {
+	jid = jid.ToNonAD()
+	if jid.Server != types.HiddenUserServer {
+		return jid
+	}
+	c := d.getClient()
+	if c == nil || c.Store == nil || c.Store.LIDs == nil {
+		return jid
+	}
+	if pn, err := c.Store.LIDs.GetPNForLID(ctx, jid); err == nil && !pn.IsEmpty() {
+		return pn.ToNonAD()
+	}
+	return jid
+}
+
 func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bool) {
-	chat := evt.Info.Chat.ToNonAD()
-	if ignoredChat(chat) || evt.IsEdit {
+	if ignoredChat(evt.Info.Chat) || evt.IsEdit {
 		return
 	}
+	chat := d.chatKey(ctx, evt.Info.Chat)
 	text, kind := extractContent(evt.Message)
 	if kind == "" {
 		return
@@ -263,7 +364,7 @@ func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bo
 	msg := Message{
 		ID:   evt.Info.ID,
 		Chat: chat.String(),
-		From: evt.Info.Sender.ToNonAD().String(),
+		From: d.chatKey(ctx, evt.Info.Sender).String(),
 		Text: text,
 		Kind: kind,
 		TS:   evt.Info.Timestamp.Unix(),
@@ -283,7 +384,11 @@ func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bo
 	if !inserted {
 		return
 	}
-	d.ensureChatName(ctx, chat, msg.Name)
+	pushName := ""
+	if !me && chat.Server != types.GroupServer {
+		pushName = evt.Info.PushName
+	}
+	d.ensureChatName(ctx, chat, pushName)
 	if !live {
 		return
 	}
@@ -293,18 +398,28 @@ func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bo
 			log.Printf("clear unread: %v", err)
 		}
 	}
-	d.emit.Emit(MessageEvent{Type: "message", Message: msg})
+	d.mu.Lock()
+	backlog := d.offline
+	d.mu.Unlock()
+	if time.Since(evt.Info.Timestamp) > backlogAge {
+		backlog = true
+	}
+	d.emit.Emit(MessageEvent{Type: "message", Message: msg, Backlog: backlog})
 	d.scheduleChats()
 }
 
 func (d *Daemon) handleHistory(ctx context.Context, evt *events.HistorySync) {
 	c := d.getClient()
+	if c == nil {
+		return
+	}
 	for _, conv := range evt.Data.GetConversations() {
-		jid, err := types.ParseJID(conv.GetID())
-		if err != nil || ignoredChat(jid) {
+		raw, err := types.ParseJID(conv.GetID())
+		if err != nil || ignoredChat(raw) {
 			continue
 		}
-		jid = jid.ToNonAD()
+		raw = raw.ToNonAD()
+		jid := d.chatKey(ctx, raw)
 		name := conv.GetName()
 		if name == "" {
 			name = conv.GetDisplayName()
@@ -317,7 +432,7 @@ func (d *Daemon) handleHistory(ctx context.Context, evt *events.HistorySync) {
 			msgs = msgs[:d.cfg.HistoryLimit]
 		}
 		for _, hm := range msgs {
-			parsed, err := c.ParseWebMessage(jid, hm.GetMessage())
+			parsed, err := c.ParseWebMessage(raw, hm.GetMessage())
 			if err != nil {
 				continue
 			}
@@ -337,11 +452,7 @@ func (d *Daemon) contactName(ctx context.Context, jid types.JID) string {
 	if c == nil || c.Store == nil || c.Store.Contacts == nil {
 		return ""
 	}
-	if jid.Server == types.HiddenUserServer && c.Store.LIDs != nil {
-		if pn, err := c.Store.LIDs.GetPNForLID(ctx, jid); err == nil && !pn.IsEmpty() {
-			jid = pn
-		}
-	}
+	jid = d.chatKey(ctx, jid)
 	info, err := c.Store.Contacts.GetContact(ctx, jid)
 	if err != nil || !info.Found {
 		return ""
@@ -354,8 +465,32 @@ func (d *Daemon) contactName(ctx context.Context, jid types.JID) string {
 	return ""
 }
 
+// renameUserChat updates the name of a one-to-one chat when contact info changes.
+// A push name only fills in a chat that has no name yet; a saved contact name wins.
+func (d *Daemon) renameUserChat(ctx context.Context, jid types.JID, name string, contact bool) {
+	if name == "" || jid.Server == types.GroupServer {
+		return
+	}
+	key := d.chatKey(ctx, jid).String()
+	if !contact {
+		if d.store.ChatName(ctx, key) != "" {
+			return
+		}
+	}
+	if !d.store.HasChat(ctx, key) {
+		return
+	}
+	if err := d.store.SetChatName(ctx, key, name); err != nil {
+		log.Printf("chat name: %v", err)
+		return
+	}
+	d.scheduleChats()
+}
+
 // ensureChatName fills in a missing chat name. Group names need a network
 // request, which runs in the background so the event loop is not blocked.
+// Chats with no known name are left empty; the phone number is shown instead
+// when the list is read, so a later contact sync can still name them.
 func (d *Daemon) ensureChatName(ctx context.Context, chat types.JID, fallback string) {
 	key := chat.String()
 	if d.store.ChatName(ctx, key) != "" {
@@ -392,9 +527,6 @@ func (d *Daemon) ensureChatName(ctx context.Context, chat types.JID, fallback st
 	if name == "" {
 		name = fallback
 	}
-	if name == "" && chat.Server == types.DefaultUserServer {
-		name = "+" + chat.User
-	}
 	if err := d.store.SetChatName(ctx, key, name); err != nil {
 		log.Printf("chat name: %v", err)
 	}
@@ -426,12 +558,10 @@ func (d *Daemon) emitChats(ctx context.Context) {
 func (d *Daemon) Handle(ctx context.Context, req Request) Response {
 	switch req.Cmd {
 	case "status":
-		d.mu.Lock()
-		data := map[string]any{"state": d.state, "detail": d.detail}
-		c := d.client
-		d.mu.Unlock()
-		if c != nil && c.Store != nil && c.Store.ID != nil {
-			data["jid"] = c.Store.ID.ToNonAD().String()
+		state, detail := d.getStatus()
+		data := map[string]any{"state": state, "detail": detail}
+		if jid := ownJID(d.getClient()); jid.User != "" {
+			data["jid"] = jid.String()
 		}
 		return Response{OK: true, Data: data}
 	case "chats":
@@ -451,7 +581,8 @@ func (d *Daemon) Handle(ctx context.Context, req Request) Response {
 	case "logout":
 		return d.cmdLogout(ctx)
 	case "quit":
-		d.quit()
+		// Let the response reach the caller before shutting down.
+		time.AfterFunc(200*time.Millisecond, d.quit)
 		return Response{OK: true}
 	}
 	return Response{Error: "unknown command"}
@@ -459,16 +590,16 @@ func (d *Daemon) Handle(ctx context.Context, req Request) Response {
 
 func fail(err error) Response { return Response{Error: err.Error()} }
 
-func parseChat(s string) (types.JID, error) {
+func (d *Daemon) parseChat(ctx context.Context, s string) (types.JID, error) {
 	jid, err := types.ParseJID(s)
 	if err != nil || jid.IsEmpty() || jid.User == "" {
 		return types.JID{}, errors.New("invalid chat jid")
 	}
-	return jid.ToNonAD(), nil
+	return d.chatKey(ctx, jid), nil
 }
 
 func (d *Daemon) cmdHistory(ctx context.Context, req Request) Response {
-	jid, err := parseChat(req.Chat)
+	jid, err := d.parseChat(ctx, req.Chat)
 	if err != nil {
 		return fail(err)
 	}
@@ -485,16 +616,17 @@ func (d *Daemon) cmdHistory(ctx context.Context, req Request) Response {
 	return Response{OK: true, Data: msgs}
 }
 
-func (d *Daemon) connectedClient() (*whatsmeow.Client, error) {
+func (d *Daemon) connectedClient() (*whatsmeow.Client, types.JID, error) {
 	c := d.getClient()
-	if c == nil || !c.IsConnected() || !c.IsLoggedIn() {
-		return nil, errors.New("not connected")
+	me := ownJID(c)
+	if me.User == "" || !c.IsConnected() || !c.IsLoggedIn() {
+		return nil, types.JID{}, errors.New("not connected")
 	}
-	return c, nil
+	return c, me, nil
 }
 
 func (d *Daemon) cmdSend(ctx context.Context, req Request) Response {
-	jid, err := parseChat(req.Chat)
+	jid, err := d.parseChat(ctx, req.Chat)
 	if err != nil {
 		return fail(err)
 	}
@@ -504,7 +636,7 @@ func (d *Daemon) cmdSend(ctx context.Context, req Request) Response {
 	if len(req.Text) > maxTextLength {
 		return Response{Error: "text too long"}
 	}
-	c, err := d.connectedClient()
+	c, me, err := d.connectedClient()
 	if err != nil {
 		return fail(err)
 	}
@@ -518,7 +650,7 @@ func (d *Daemon) cmdSend(ctx context.Context, req Request) Response {
 	msg := Message{
 		ID:   resp.ID,
 		Chat: jid.String(),
-		From: c.Store.ID.ToNonAD().String(),
+		From: me.String(),
 		Text: req.Text,
 		Kind: KindText,
 		TS:   resp.Timestamp.Unix(),
@@ -533,8 +665,14 @@ func (d *Daemon) cmdSend(ctx context.Context, req Request) Response {
 	return Response{OK: true, Data: map[string]any{"id": resp.ID, "ts": msg.TS}}
 }
 
+// cmdRead sends read receipts and clears the unread state. Without a
+// connection nothing is cleared, so the receipts can be sent later.
 func (d *Daemon) cmdRead(ctx context.Context, req Request) Response {
-	jid, err := parseChat(req.Chat)
+	jid, err := d.parseChat(ctx, req.Chat)
+	if err != nil {
+		return fail(err)
+	}
+	c, _, err := d.connectedClient()
 	if err != nil {
 		return fail(err)
 	}
@@ -543,14 +681,6 @@ func (d *Daemon) cmdRead(ctx context.Context, req Request) Response {
 		return fail(err)
 	}
 	d.scheduleChats()
-	if len(refs) == 0 {
-		return Response{OK: true}
-	}
-	c, err := d.connectedClient()
-	if err != nil {
-		// Local state is cleared; receipts are best effort.
-		return Response{OK: true, Data: map[string]any{"receipts": false}}
-	}
 	bySender := map[string][]types.MessageID{}
 	for _, r := range refs {
 		bySender[r.Sender] = append(bySender[r.Sender], r.ID)
@@ -562,50 +692,69 @@ func (d *Daemon) cmdRead(ctx context.Context, req Request) Response {
 		}
 		if err := c.MarkRead(ctx, ids, time.Now(), jid, senderJID); err != nil {
 			log.Printf("mark read: %v", err)
-			return Response{OK: true, Data: map[string]any{"receipts": false}}
+			if err := d.store.RestoreUnread(ctx, jid.String(), ids); err != nil {
+				log.Printf("restore unread: %v", err)
+			}
+			d.scheduleChats()
+			return Response{Error: "read receipts failed"}
 		}
 	}
-	return Response{OK: true, Data: map[string]any{"receipts": true}}
+	return Response{OK: true}
 }
 
+// cmdLogin starts QR pairing when there is no session, or reconnects a session
+// that stopped (stream replaced, connect failure...).
 func (d *Daemon) cmdLogin(ctx context.Context) Response {
+	d.lifecycle.Lock()
+	defer d.lifecycle.Unlock()
 	c := d.getClient()
-	if c != nil && c.Store.ID != nil && !c.Store.Deleted {
-		return Response{Error: "already logged in"}
+	if ownJID(c).User != "" && !c.Store.Deleted {
+		if c.IsConnected() {
+			return Response{Error: "already logged in"}
+		}
+		c.Disconnect()
+		d.setStatus(StateConnecting, "")
+		if err := c.Connect(); err != nil {
+			log.Printf("reconnect: %v", err)
+			d.setStatus(StateConnecting, "reconnecting")
+		}
+		return Response{OK: true, Data: map[string]any{"action": "reconnect"}}
 	}
 	d.mu.Lock()
 	pairing := d.pairing
 	d.mu.Unlock()
 	if pairing {
-		return Response{OK: true}
+		return Response{OK: true, Data: map[string]any{"action": "pairing"}}
 	}
-	if c != nil {
-		c.Disconnect()
-	}
-	if c == nil || c.Store.Deleted {
-		d.newClient(d.container.NewDevice())
-	}
-	if err := d.startPairing(context.Background()); err != nil {
+	// A fresh device for every pairing attempt: an unpaired device is never
+	// stored, and a new client avoids stacking QR handlers.
+	d.newClient(d.container.NewDevice())
+	if err := d.startPairing(); err != nil {
 		return fail(err)
 	}
-	return Response{OK: true}
+	return Response{OK: true, Data: map[string]any{"action": "pairing"}}
 }
 
 func (d *Daemon) cmdLogout(ctx context.Context) Response {
+	d.lifecycle.Lock()
+	defer d.lifecycle.Unlock()
 	c := d.getClient()
-	if c == nil || c.Store.ID == nil {
+	if ownJID(c).User == "" {
 		return Response{Error: "not logged in"}
 	}
 	lctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	remote := true
 	if err := c.Logout(lctx); err != nil {
-		// Server unreachable: drop the local session anyway.
+		// Server unreachable: drop the local session anyway. The phone still
+		// lists this device and the user has to remove it there.
 		log.Printf("logout: %v", err)
+		remote = false
 		c.Disconnect()
 		if err := c.Store.Delete(lctx); err != nil {
 			return fail(err)
 		}
 	}
 	d.onLoggedOut(ctx, "")
-	return Response{OK: true}
+	return Response{OK: true, Data: map[string]any{"remote": remote}}
 }

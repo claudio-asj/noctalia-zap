@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
 )
 
@@ -38,13 +40,37 @@ const maxRequestSize = 256 * 1024
 func defaultSocketPath() string {
 	dir := os.Getenv("XDG_RUNTIME_DIR")
 	if dir == "" {
-		dir = os.TempDir()
+		// A per-user private directory, checked in listenControl.
+		dir = filepath.Join(os.TempDir(), fmt.Sprintf("noctalia-zap-%d", os.Getuid()))
 	}
 	return filepath.Join(dir, "noctalia-zap.sock")
 }
 
+// ensurePrivateDir makes sure the socket directory exists, belongs to us and
+// is not writable by others, so nobody can plant a socket in it.
+func ensurePrivateDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !fi.IsDir() || !ok || int(st.Uid) != os.Getuid() {
+		return fmt.Errorf("%s is not a directory owned by the current user", dir)
+	}
+	if fi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s is writable by other users", dir)
+	}
+	return nil
+}
+
 // listenControl opens the unix socket, refusing to take over a socket that is still in use.
 func listenControl(path string) (net.Listener, error) {
+	if err := ensurePrivateDir(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
 	if c, err := net.DialTimeout("unix", path, time.Second); err == nil {
 		c.Close()
 		return nil, fmt.Errorf("another daemon is already listening on %s", path)
@@ -92,17 +118,34 @@ func handleConn(ctx context.Context, conn net.Conn, h Handler) {
 	if err := json.Unmarshal(line, &req); err != nil {
 		resp = Response{Error: "invalid request"}
 	} else {
-		resp = h(ctx, req)
+		resp = safeHandle(ctx, h, req)
 	}
 	enc := json.NewEncoder(conn)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(resp)
 }
 
+// safeHandle keeps a panic in one command from taking the daemon down.
+func safeHandle(ctx context.Context, h Handler, req Request) (resp Response) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("control: panic in %q: %v", req.Cmd, r)
+			resp = Response{Error: "internal error"}
+		}
+	}()
+	return h(ctx, req)
+}
+
 // runCtl implements `noctalia-zapd ctl <cmd> [args...]`: it builds a request from
 // argv, sends it to the running daemon and prints the JSON response to stdout.
 func runCtl(socket string, args []string) int {
 	req, err := parseCtlArgs(args)
+	if err == nil && req.Cmd == "send" && req.Text == "-" {
+		// Read the text from stdin so it does not show up in the process list.
+		var b []byte
+		b, err = io.ReadAll(io.LimitReader(os.Stdin, maxTextLength+1))
+		req.Text = strings.TrimRight(string(b), "\n")
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ctl:", err)
 		fmt.Fprintln(os.Stderr, ctlUsage)
@@ -136,7 +179,7 @@ const ctlUsage = `commands:
   status
   chats
   history <chat-jid> [limit]
-  send <chat-jid> <text>
+  send <chat-jid> <text>     (use "-" as text to read it from stdin)
   read <chat-jid>
   login
   logout

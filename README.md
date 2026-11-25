@@ -2,7 +2,7 @@
 
 A WhatsApp client that lives in the Noctalia bar. The plugin draws the whole interface (unread badge, chat list, conversation view, QR login), and a small Go helper, `noctalia-zapd`, talks to WhatsApp through [whatsmeow](https://github.com/tulir/whatsmeow).
 
-> Status: project skeleton only. There is no working code yet.
+> Status: the helper daemon works from the terminal (QR login, send and receive text). The plugin UI is not written yet.
 
 ## Layout
 
@@ -10,6 +10,23 @@ A WhatsApp client that lives in the Noctalia bar. The plugin draws the whole int
 daemon/                 noctalia-zapd (Go + whatsmeow)
 plugin/noctalia-zap/    Noctalia plugin (Luau)
 docs/                   architecture, API notes, roadmap (Portuguese)
+```
+
+## Building the helper
+
+Needs Go and a C compiler (SQLite uses cgo).
+
+```
+cd daemon
+go build -o bin/noctalia-zapd .
+./bin/noctalia-zapd run -data ~/.local/share/noctalia-zap-test -qr-terminal
+```
+
+Scan the QR code with WhatsApp (Linked devices). In another terminal:
+
+```
+./bin/noctalia-zapd ctl chats
+./bin/noctalia-zapd ctl send 5511999999999@s.whatsapp.net "hello"
 ```
 
 ## Before you use it

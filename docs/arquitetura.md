@@ -23,30 +23,62 @@
   (`noctalia.pluginDataDir()`), passado por argumento.
 - Faz login por QR. Gera o QR como **PNG**, que o painel mostra com `ui.image` (só aceita arquivo local).
 - Saída: **um JSON por linha** no stdout, que o service lê com `noctalia.runStream(cmd, onLine)`.
-- Entrada de comandos: a definir na fase 1. Opções:
-  1. socket unix em `$XDG_RUNTIME_DIR/noctalia-zap.sock`, com o plugin chamando `noctalia-zapd ctl <cmd>` via
-     `runAsync` com argv. Preferida, porque o `runStream` não oferece stdin.
-  2. arquivo de fila no diretório de dados (fallback).
+- Entrada de comandos: socket unix em `$XDG_RUNTIME_DIR/noctalia-zap.sock` (permissão 0600). O plugin chama
+  `noctalia-zapd ctl <cmd> [args]` via `runAsync` com argv; o `ctl` monta o JSON, envia uma linha e imprime a
+  resposta (uma linha JSON) no stdout. O `runStream` não oferece stdin, por isso o socket.
+- Arquivos no diretório de dados: `session.db` (whatsmeow), `messages.db` (conversas e mensagens locais, porque o
+  whatsmeow não guarda mensagens) e `qr.png` (só durante o pareamento).
+- Reconexão: auto-reconnect do whatsmeow. Logout remoto apaga a sessão e as mensagens locais.
 
-### Protocolo (rascunho)
+### Uso
 
-Eventos (daemon → plugin):
+```
+noctalia-zapd run -data DIR [-socket PATH] [-history-limit 50] [-qr-terminal] [-log-level warn]
+noctalia-zapd ctl [-socket PATH] status | chats | history <jid> [limit] | send <jid> <texto>
+                                 | read <jid> | login | logout | quit
+```
+
+### Protocolo
+
+Eventos (daemon → plugin, stdout):
 
 ```json
 {"type":"status","state":"connecting|qr|connected|logged_out|error","detail":"..."}
 {"type":"qr","png":"/abs/path/qr.png"}
-{"type":"chats","items":[{"jid":"...","name":"...","unread":2,"last":"...","ts":1700000000}]}
-{"type":"message","chat":"jid","from":"jid","name":"...","text":"...","ts":1700000000,"me":false}
+{"type":"chats","items":[{"jid":"...","name":"...","unread":2,"last":"...","last_kind":"text","ts":1700000000}]}
+{"type":"message","id":"...","chat":"jid","from":"jid","name":"...","text":"...","kind":"text","ts":1700000000,"me":false,"backlog":false}
+{"type":"history","chat":"jid","items":[/* mensagens no formato acima, sem "type", da mais antiga à mais nova */]}
 ```
 
-Comandos (plugin → daemon):
+- `chats` sai na partida, ao conectar e (com debounce de 300 ms) depois de qualquer mudança. É a lista completa.
+- `kind`: `text`, `image`, `video`, `audio`, `document`, `sticker`, `location`, `contact`, `poll`. Para tipos que
+  não são texto, `text` traz a legenda/nome do arquivo (pode vir vazio); o plugin traduz o rótulo.
+- `detail` do status: `reconnecting`, `keepalive_timeout`, `paired`, `qr_timeout`, `pair_failed`,
+  `logged_out_remotely`, `stream_replaced`, `temporary_ban`, `client_outdated`, `connect_failure`...
+  `connect_failed`. Depois de `qr_timeout`, `connect_failed` ou `logged_out`, o plugin chama `ctl login` para gerar
+  um QR novo. Com sessão já pareada e desconectada (`stream_replaced`, `connect_failure`...), `login` reconecta.
+- `backlog: true` marca mensagem que chegou atrasada (sync offline ou mais de 5 min de idade). Não notificar.
+- Chat sem nome conhecido vem com o telefone (`+55...`) em `name`; o nome real chega depois, com a sincronização de
+  contatos. Chats `@lid` são convertidos para o JID de telefone quando o mapeamento é conhecido.
+- Mensagens de status (stories), canais, reações e edições são ignoradas por enquanto.
+
+Comandos (plugin → daemon, socket; uma linha JSON de ida e uma de volta):
 
 ```json
-{"cmd":"send","chat":"jid","text":"..."}
-{"cmd":"history","chat":"jid","limit":50}
-{"cmd":"read","chat":"jid"}
-{"cmd":"logout"}
+{"cmd":"send","chat":"jid","text":"..."}      → {"ok":true,"data":{"id":"...","ts":1700000000}}
+{"cmd":"history","chat":"jid","limit":50}      → {"ok":true,"data":[mensagens]}
+{"cmd":"read","chat":"jid"}                    → {"ok":true}  (erro "not connected" sem conexão; nada é zerado)
+{"cmd":"login"}                                → {"ok":true,"data":{"action":"pairing|reconnect"}}
+{"cmd":"logout"}                               → {"ok":true,"data":{"remote":false}}  (false: remover no celular)
+{"cmd":"chats"} {"cmd":"status"} {"cmd":"quit"}
 ```
+
+Erro: `{"ok":false,"error":"..."}` e o `ctl` sai com código 1. `send` e `read` também emitem os eventos
+correspondentes no stdout, então o service não precisa tratar a resposta além do erro.
+
+Limitação conhecida: o `runAsync` não tem stdin, então o plugin passa o texto de `send` no argv, que fica visível em
+`/proc/<pid>/cmdline` enquanto o `ctl` roda (milissegundos). No terminal, use `ctl send <jid> -` para ler do stdin.
+Se isso incomodar, a saída é o plugin gravar o texto num arquivo 0600 em `pluginDataDir()` e passar o caminho.
 
 ## Plugin (Luau)
 

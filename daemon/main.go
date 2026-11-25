@@ -75,12 +75,19 @@ func cmdRun(args []string) int {
 		fmt.Fprintf(os.Stderr, "run: -history-limit must be between 1 and %d\n", maxHistoryLimit)
 		return 2
 	}
+	// Everything the daemon creates (session keys, messages, QR) is private.
+	umask(0o077)
 	dir, err := filepath.Abs(*dataDir)
 	if err != nil {
 		log.Printf("data dir: %v", err)
 		return 1
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.Printf("data dir: %v", err)
+		return 1
+	}
+	// MkdirAll leaves an existing directory alone; tighten it.
+	if err := os.Chmod(dir, 0o700); err != nil {
 		log.Printf("data dir: %v", err)
 		return 1
 	}
@@ -93,7 +100,7 @@ func cmdRun(args []string) int {
 	waLogger := newWALogger(*logLevel)
 	store.DeviceProps.Os = proto.String("Noctalia Zap")
 	container, err := sqlstore.New(ctx, "sqlite3",
-		"file:"+filepath.Join(dir, "session.db")+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000",
+		sqliteDSN(filepath.Join(dir, "session.db"), "_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000"),
 		waLogger.Sub("Database"))
 	if err != nil {
 		log.Printf("open session store: %v", err)
@@ -128,12 +135,12 @@ func cmdRun(args []string) int {
 		WALog:        waLogger.Sub("Client"),
 	}, container, msgs, emit, cancel)
 
-	go serveControl(ctx, ln, d.Handle)
-
 	if err := d.Start(ctx); err != nil {
 		log.Printf("start: %v", err)
 		emit.Status(StateError, "start_failed")
 	}
+	// Commands are accepted only after Start, so login/logout never race with it.
+	go serveControl(ctx, ln, d.Handle)
 
 	<-ctx.Done()
 	d.Stop()
