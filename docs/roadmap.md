@@ -8,12 +8,12 @@ Estrutura, AGENTS.md (agnóstico de ferramenta), papéis de agentes, arquitetura
 - [x] Sessão persistida no diretório de dados; reconexão automática
 - [x] Eventos JSON por linha: status, qr, chats, message
 - [x] Canal de comandos (socket unix + subcomando `ctl`)
-- **Pronto quando:** logar com número secundário, receber e enviar texto pelo terminal (falta o teste com número real)
+- **Pronto quando:** logar com número secundário, receber e enviar texto pelo terminal ✅ (testado pelo painel em 2026-11-26)
 
 ## Fase 2: Plugin mínimo
-- [ ] Service inicia o daemon e popula o `noctalia.state`
-- [ ] Widget com contador de não lidas
-- [ ] Painel: tela de QR e lista de conversas
+- [x] Service inicia o daemon e popula o `noctalia.state`
+- [x] Widget com contador de não lidas
+- [x] Painel: tela de QR e lista de conversas
 
 ## Fase 3: Conversa
 - [ ] Abrir conversa, histórico, campo de envio
