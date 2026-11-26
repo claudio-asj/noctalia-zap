@@ -275,6 +275,9 @@ Comandos:
   - Pode passar de 60 s em arquivo grande: o daemon continua mesmo que o `ctl` desista; falha depois disso sai como
     `{"type":"send_failed","chat":"jid","error":"..."}`.
 - Nenhum caminho de arquivo nem legenda vai para o log.
+- Barra de progresso do áudio: o evento `playback` com `state:"playing"` passa a trazer `"started_ms":<unix ms>` e
+  `"seconds":<duração>` (do `media.seconds`; se 0, `ffprobe`; se não der, omitido). O plugin desenha `ui.progress`
+  com `(agora - started_ms) / seconds` e o tempo decorrido, atualizando 1×/s só enquanto algo toca.
 
 ## Plugin (Luau)
 
