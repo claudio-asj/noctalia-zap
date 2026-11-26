@@ -25,6 +25,7 @@ M.KEY_UNREAD = "unread" -- total unread messages
 M.KEY_DAEMON = "daemon" -- path of the noctalia-zapd binary, or nil when missing
 M.KEY_MESSAGES = "messages" -- { seq = number, items = { message } }: last live messages
 M.KEY_PLAYBACK = "playback" -- { chat, id, playing }: the audio player state
+M.KEY_BACKFILL = "backfill" -- { chat, at }: the phone resent a chat's history
 -- Written by the panel:
 M.KEY_ACTIVE_CHAT = "activeChat" -- jid shown in the open panel, or nil
 M.KEY_PANEL_OPEN = "panelOpen" -- true while a panel is open

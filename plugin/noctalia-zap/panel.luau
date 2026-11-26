@@ -174,6 +174,12 @@ local function selectChat(jid)
   sendError = false
   publishActive()
   loadHistory(jid, HISTORY_LIMIT)
+  -- Older media may lack download data: ask the phone to resend this chat's
+  -- history. The daemon skips chats that need nothing; the answer comes back
+  -- as a "backfill" event and the chat reloads.
+  if daemon ~= nil then
+    noctalia.runAsync({ daemon, "ctl", "backfill", jid }, function(_r) end, 30000)
+  end
   -- Receipts only once the user can see the chat; onOpen covers the rest.
   local c = chatByJid(jid)
   if isOpen and c and c.unread > 0 then
@@ -979,6 +985,11 @@ noctalia.state.watch(common.KEY_DAEMON, function(value)
   render()
 end)
 noctalia.state.watch(common.KEY_MESSAGES, onMessages)
+noctalia.state.watch(common.KEY_BACKFILL, function(value)
+  if isOpen and type(value) == "table" and value.chat == selected and not loadingHistory then
+    loadHistory(selected, HISTORY_LIMIT)
+  end
+end)
 noctalia.state.watch(common.KEY_PLAYBACK, function(value)
   playback = value or {}
   render()

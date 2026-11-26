@@ -135,6 +135,63 @@ func (s *MsgStore) RestoreUnread(ctx context.Context, jid string, ids []string) 
 // AddMessage stores a message and updates the chat preview. When unread is true
 // and the message is new, the chat unread counter is incremented.
 // Returns false if the message was already stored.
+// mediaColumns returns the raw and media column values of a message (nil when absent).
+func mediaColumns(m Message) (raw, mediaJSON any) {
+	if m.Media != nil {
+		meta := *m.Media
+		meta.Thumb, meta.File = "", ""
+		if b, err := json.Marshal(meta); err == nil {
+			mediaJSON = string(b)
+		}
+	}
+	if len(m.Raw) > 0 {
+		raw = m.Raw
+	}
+	return raw, mediaJSON
+}
+
+// FillMedia adds the download data to a message stored without it (saved
+// before media support). Reports whether a row was updated.
+func (s *MsgStore) FillMedia(ctx context.Context, m Message) (bool, error) {
+	raw, mediaJSON := mediaColumns(m)
+	if raw == nil {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.ExecContext(ctx, `UPDATE messages SET raw = ?, media = ?
+		WHERE chat = ? AND id = ? AND (raw IS NULL OR length(raw) = 0)`, raw, mediaJSON, m.Chat, m.ID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// NeedsBackfill reports whether a chat has media messages stored without download data.
+func (s *MsgStore) NeedsBackfill(ctx context.Context, chat string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE chat = ?
+		AND kind IN ('image', 'video', 'audio', 'document', 'sticker')
+		AND (raw IS NULL OR length(raw) = 0)`, chat).Scan(&n)
+	return n > 0, err
+}
+
+// NewestMessage returns the newest stored message of a chat, used as the
+// anchor of an on-demand history request.
+func (s *MsgStore) NewestMessage(ctx context.Context, chat string) (id string, ts int64, me bool, found bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err = s.db.QueryRowContext(ctx, `SELECT id, ts, me FROM messages WHERE chat = ?
+		ORDER BY ts DESC LIMIT 1`, chat).Scan(&id, &ts, &me)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, false, false, nil
+	}
+	return id, ts, me, err == nil, err
+}
+
 func (s *MsgStore) AddMessage(ctx context.Context, m Message, unread bool) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -144,18 +201,7 @@ func (s *MsgStore) AddMessage(ctx context.Context, m Message, unread bool) (bool
 	}
 	defer tx.Rollback()
 
-	var mediaJSON any
-	if m.Media != nil {
-		meta := *m.Media
-		meta.Thumb, meta.File = "", ""
-		if b, err := json.Marshal(meta); err == nil {
-			mediaJSON = string(b)
-		}
-	}
-	var raw any
-	if len(m.Raw) > 0 {
-		raw = m.Raw
-	}
+	raw, mediaJSON := mediaColumns(m)
 	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO messages
 		(chat, id, sender, name, text, kind, ts, me, unread, raw, media)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -332,6 +378,28 @@ func (s *MsgStore) History(ctx context.Context, jid string, limit int) ([]Messag
 }
 
 // MediaRef is what is needed to download a media message again.
+// MediaIDs lists the media messages of a chat that have download data, newest first.
+func (s *MsgStore) MediaIDs(ctx context.Context, chat string, limit int) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM messages WHERE chat = ?
+		AND kind IN ('image', 'video', 'sticker') AND length(raw) > 0
+		ORDER BY ts DESC LIMIT ?`, chat, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 type MediaRef struct {
 	Kind string
 	TS   int64

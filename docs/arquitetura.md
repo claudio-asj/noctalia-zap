@@ -130,6 +130,14 @@ Comandos novos:
   <arquivo>`; sem mpv, `ffplay -nodisp -autoexit -loglevel quiet <arquivo>`; sem os dois, erro `no_player`.
   `play` mata o anterior. Evento ao começar e ao terminar (fim, `stop` ou novo `play`):
   `{"type":"playback","chat":"jid","id":"msgid","state":"playing|stopped"}`.
+- Mídia antiga sem dados de download (`not_stored`): `{"cmd":"backfill","chat":"jid"}` pede ao celular o
+  histórico recente da conversa (pedido sob demanda do whatsmeow, ancorado na mensagem mais nova; até
+  `-history-limit` mensagens). Responde `{"requested":true|false}` (false: nada a recuperar ou pedido feito há
+  menos de 10 min). A resposta chega como history sync: mensagens já guardadas ganham `raw`/`media`, as que
+  faltavam entram, o contador de não lidas não muda. O daemon baixa em seguida as miniaturas que faltam
+  (`DownloadThumbnail` em foto/vídeo; figurinha até 512 KB baixada inteira e convertida de WebP para PNG) e
+  então emite `{"type":"backfill","chat":"jid"}`; o painel recarrega a conversa aberta. O painel pede
+  `backfill` ao abrir cada conversa. Só funciona com o celular online.
 - Cache: flag `-media-cache-mb N` (padrão 500). Depois de cada download para o cache, apaga os arquivos mais
   antigos (mtime) de `media/` (não `media/thumbs/`) até caber, nunca o que acabou de baixar. Logout apaga `media/`
   inteiro, mas nunca a pasta de downloads do usuário.

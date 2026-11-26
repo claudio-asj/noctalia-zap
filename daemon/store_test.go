@@ -187,3 +187,35 @@ func TestEmitMessageFitsLine(t *testing.T) {
 		t.Fatal("expected truncated flag")
 	}
 }
+
+func TestFillMediaAndBackfill(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	chat := "1@s.whatsapp.net"
+	old := Message{ID: "m1", Chat: chat, Kind: KindImage, TS: 1}
+	if _, err := s.AddMessage(ctx, old, false); err != nil {
+		t.Fatal(err)
+	}
+	if need, _ := s.NeedsBackfill(ctx, chat); !need {
+		t.Fatal("old media must need backfill")
+	}
+	withRaw := old
+	withRaw.Raw = []byte{1, 2, 3}
+	withRaw.Media = &MediaInfo{Mime: "image/jpeg"}
+	if ok, err := s.FillMedia(ctx, withRaw); err != nil || !ok {
+		t.Fatalf("fill = %v, %v", ok, err)
+	}
+	if ok, _ := s.FillMedia(ctx, withRaw); ok {
+		t.Fatal("second fill must not update")
+	}
+	if need, _ := s.NeedsBackfill(ctx, chat); need {
+		t.Fatal("no backfill needed after fill")
+	}
+	id, ts, _, found, err := s.NewestMessage(ctx, chat)
+	if err != nil || !found || id != "m1" || ts != 1 {
+		t.Fatalf("newest = %q %d %v %v", id, ts, found, err)
+	}
+	if _, _, _, found, _ := s.NewestMessage(ctx, "none@s.whatsapp.net"); found {
+		t.Fatal("empty chat has no newest")
+	}
+}

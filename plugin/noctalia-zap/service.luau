@@ -228,6 +228,8 @@ local function onLine(line: string)
     end
   elseif event.type == "message" then
     onMessage(event)
+  elseif event.type == "backfill" then
+    noctalia.state.set(common.KEY_BACKFILL, { chat = event.chat or "", at = noctalia.nowMs() })
   elseif event.type == "playback" then
     noctalia.state.set(common.KEY_PLAYBACK, {
       chat = event.chat or "",

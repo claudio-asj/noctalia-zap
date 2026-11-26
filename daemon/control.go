@@ -203,6 +203,7 @@ const ctlUsage = `commands:
   send <chat-jid> <text>     (use "-" as text to read it from stdin)
   send <chat-jid> --file <path>  (text read from the file, which is then removed)
   read <chat-jid>
+  backfill <chat-jid>        (ask the phone to resend recent history)
   media <chat-jid> <msg-id>  (download if needed, print the file path)
   play <chat-jid> <msg-id>
   stop
@@ -221,6 +222,11 @@ func parseCtlArgs(args []string) (Request, error) {
 		if len(rest) != 0 {
 			return req, fmt.Errorf("%s takes no arguments", req.Cmd)
 		}
+	case "backfill":
+		if len(rest) != 1 {
+			return req, errors.New("usage: backfill <chat-jid>")
+		}
+		req.Chat = rest[0]
 	case "read":
 		if len(rest) != 1 {
 			return req, errors.New("usage: read <chat-jid>")

@@ -16,6 +16,7 @@ import (
 	"github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
@@ -67,6 +68,7 @@ type Daemon struct {
 	offline     bool // between OfflineSyncPreview and OfflineSyncCompleted
 	chatsTimer  *time.Timer
 	nameLookups map[string]bool
+	backfillAt  map[string]time.Time // chat -> last on-demand history request
 	// qrFile is the current QR image. Each code gets a new file name so image
 	// caches keyed by path (the plugin's ui.image) always show the new code.
 	qrFile string
@@ -81,6 +83,7 @@ func NewDaemon(cfg Config, container *sqlstore.Container, msgs *MsgStore, emit *
 		quit:        quit,
 		player:      NewPlayer(emit),
 		nameLookups: map[string]bool{},
+		backfillAt:  map[string]time.Time{},
 	}
 }
 
@@ -424,6 +427,17 @@ func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bo
 		return
 	}
 	if !inserted {
+		// Already stored: a history resend may bring the download data that
+		// older rows lack.
+		if mp != nil {
+			if filled, err := d.store.FillMedia(ctx, msg); err != nil {
+				log.Printf("fill media: %v", err)
+			} else if filled {
+				if err := writeThumb(d.cfg.DataDir, msg.Chat, msg.ID, kind, mp.Thumb); err != nil {
+					log.Printf("write thumb: %v", err)
+				}
+			}
+		}
 		return
 	}
 	if mp != nil {
@@ -489,6 +503,8 @@ func (d *Daemon) handleHistory(ctx context.Context, evt *events.HistorySync) {
 	if c == nil {
 		return
 	}
+	// On-demand answers (our backfill requests) carry no meaningful unread count.
+	onDemand := evt.Data.GetSyncType() == waHistorySync.HistorySync_ON_DEMAND
 	for _, conv := range evt.Data.GetConversations() {
 		raw, err := types.ParseJID(conv.GetID())
 		if err != nil || ignoredChat(raw) {
@@ -514,7 +530,13 @@ func (d *Daemon) handleHistory(ctx context.Context, evt *events.HistorySync) {
 			}
 			d.handleMessage(ctx, parsed, false)
 		}
-		if err := d.store.SetUnread(ctx, jid.String(), int(conv.GetUnreadCount())); err != nil {
+		if onDemand {
+			// Fetch the previews the resend left out, then tell the plugin.
+			key := jid.String()
+			go d.fetchMissingThumbs(key, func() {
+				d.emit.Emit(BackfillEvent{Type: "backfill", Chat: key})
+			})
+		} else if err := d.store.SetUnread(ctx, jid.String(), int(conv.GetUnreadCount())); err != nil {
 			log.Printf("history: unread: %v", err)
 		}
 		d.ensureChatName(ctx, jid, "")
@@ -689,6 +711,8 @@ func (d *Daemon) Handle(ctx context.Context, req Request) Response {
 		return Response{OK: true, Data: chats}
 	case "history":
 		return d.cmdHistory(ctx, req)
+	case "backfill":
+		return d.cmdBackfill(ctx, req)
 	case "send":
 		return d.cmdSend(ctx, req)
 	case "read":
@@ -883,4 +907,57 @@ func (d *Daemon) cmdLogout(ctx context.Context) Response {
 	}
 	d.onLoggedOut(ctx, "")
 	return Response{OK: true, Data: map[string]any{"remote": remote}}
+}
+
+// backfillGap keeps a chat from being asked again while the phone answers.
+const backfillGap = 10 * time.Minute
+
+// cmdBackfill asks the phone to resend the recent history of a chat when it
+// has media stored without download data. The answer arrives later as a
+// history sync; a "backfill" event announces it.
+func (d *Daemon) cmdBackfill(ctx context.Context, req Request) Response {
+	jid, err := d.parseChat(ctx, req.Chat)
+	if err != nil {
+		return fail(err)
+	}
+	key := jid.String()
+	need, err := d.store.NeedsBackfill(ctx, key)
+	if err != nil {
+		return fail(err)
+	}
+	if !need {
+		return Response{OK: true, Data: map[string]any{"requested": false}}
+	}
+	d.mu.Lock()
+	last, asked := d.backfillAt[key]
+	d.mu.Unlock()
+	if asked && time.Since(last) < backfillGap {
+		return Response{OK: true, Data: map[string]any{"requested": false}}
+	}
+	c, _, err := d.connectedClient()
+	if err != nil {
+		return fail(err)
+	}
+	id, ts, me, found, err := d.store.NewestMessage(ctx, key)
+	if err != nil {
+		return fail(err)
+	}
+	if !found {
+		return Response{OK: true, Data: map[string]any{"requested": false}}
+	}
+	info := &types.MessageInfo{
+		MessageSource: types.MessageSource{Chat: jid, IsFromMe: me},
+		ID:            id,
+		Timestamp:     time.Unix(ts, 0),
+	}
+	sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, err := c.SendPeerMessage(sctx, c.BuildHistorySyncRequest(info, d.cfg.HistoryLimit)); err != nil {
+		log.Printf("backfill request failed: %v", err)
+		return Response{Error: "backfill failed"}
+	}
+	d.mu.Lock()
+	d.backfillAt[key] = time.Now()
+	d.mu.Unlock()
+	return Response{OK: true, Data: map[string]any{"requested": true}}
 }

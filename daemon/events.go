@@ -69,6 +69,12 @@ type MessageEvent struct {
 	Muted bool `json:"muted,omitempty"`
 }
 
+// BackfillEvent says that the phone answered a backfill request for a chat.
+type BackfillEvent struct {
+	Type string `json:"type"` // "backfill"
+	Chat string `json:"chat"`
+}
+
 // Status states.
 const (
 	StateConnecting   = "connecting"
