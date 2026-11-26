@@ -11,5 +11,6 @@ return {
   listWidth = 300,
   avatar = 36,
   qrSize = 280,
+  bubbleMax = 420,
   barGlyph = 14,
 }

@@ -23,6 +23,16 @@ M.KEY_QR = "qr" -- absolute path of the current QR image, or nil
 M.KEY_CHATS = "chats" -- list of chats, most recent first
 M.KEY_UNREAD = "unread" -- total unread messages
 M.KEY_DAEMON = "daemon" -- path of the noctalia-zapd binary, or nil when missing
+M.KEY_MESSAGES = "messages" -- { seq = number, items = { message } }: last live messages
+-- Written by the panel:
+M.KEY_ACTIVE_CHAT = "activeChat" -- jid shown in the open panel, or nil
+M.KEY_PANEL_OPEN = "panelOpen" -- true while a panel is open
+-- Written by the service when a notification is clicked:
+M.KEY_OPEN_CHAT = "openChat" -- { jid = string, at = number }
+
+function M.isGroup(jid: string?): boolean
+  return jid ~= nil and string.sub(jid, -5) == "@g.us"
+end
 
 -- Status states that mean "not usable right now".
 function M.isProblem(state: string?): boolean
@@ -40,6 +50,21 @@ function M.preview(text: string?, kind: string?): string
     return `{label}: {text}`
   end
   return label
+end
+
+local KIND_GLYPHS = {
+  image = "photo",
+  video = "video",
+  audio = "microphone",
+  document = "file",
+  sticker = "sticker",
+  location = "map-pin",
+  contact = "user",
+  poll = "chart-bar",
+}
+
+function M.kindGlyph(kind: string?): string
+  return KIND_GLYPHS[kind or ""] or "message"
 end
 
 -- First visible character of a name, for the avatar placeholder.

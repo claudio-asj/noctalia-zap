@@ -6,8 +6,10 @@
 local common = require("./lib/common.luau")
 
 local MAX_CHATS = 300
+local MAX_RECENT = 40 -- live messages kept in shared state for the panel
 local WATCHDOG_MS = 10000
 local RESTART_GRACE_MS = 15000
+local NOTIFY_GAP_MS = 3000 -- at most one notification per chat in this window
 
 local dataDir, dataError = noctalia.pluginDataDir()
 local binary = nil
@@ -15,6 +17,10 @@ local lastStart = 0
 local failures = 0
 local restartPending = false
 local pendingChats = nil -- chat pages being assembled
+local chatNames = {} -- jid -> name, from the last chat list
+local recent = {} -- last live messages, each with a sequence number
+local seq = 0
+local lastNotify = {} -- jid -> nowMs of the last notification
 
 local function shellQuote(value: string): string
   return "'" .. string.gsub(value, "'", "'\\''") .. "'"
@@ -70,8 +76,90 @@ local function onChats(items)
       })
     end
   end
+  local names = {}
+  for _, c in items do
+    if type(c) == "table" and type(c.jid) == "string" then
+      names[c.jid] = c.name or ""
+    end
+  end
+  chatNames = names
   noctalia.state.set(common.KEY_CHATS, chats)
   noctalia.state.set(common.KEY_UNREAD, unread)
+end
+
+local function notify(m)
+  if noctalia.getConfig("notifications") == false then
+    return
+  end
+  if m.me or m.backlog or m.muted then
+    return
+  end
+  if noctalia.state.get(common.KEY_ACTIVE_CHAT) == m.chat then
+    return -- the user is looking at this chat
+  end
+  local now = noctalia.nowMs()
+  if lastNotify[m.chat] and now - lastNotify[m.chat] < NOTIFY_GAP_MS then
+    return
+  end
+  lastNotify[m.chat] = now
+
+  local chatName = chatNames[m.chat]
+  if chatName == nil or chatName == "" then
+    chatName = m.name or ""
+  end
+  local title = chatName
+  if common.isGroup(m.chat) and m.name and m.name ~= "" then
+    title = noctalia.tr("notify.group_title", { sender = m.name, chat = chatName })
+  end
+  local body
+  if noctalia.getConfig("notify_private") == true then
+    body = noctalia.tr("notify.hidden")
+  else
+    body = common.preview(m.text, m.kind)
+  end
+  noctalia.notify(title, body, {
+    actions = { { id = "reply", label = noctalia.tr("notify.reply") } },
+    onAction = "onNotifyAction",
+    context = m.chat,
+  })
+end
+
+local function onMessage(event)
+  if type(event.chat) ~= "string" then
+    return
+  end
+  seq += 1
+  local m = {
+    seq = seq,
+    id = event.id or "",
+    chat = event.chat,
+    from = event.from or "",
+    name = event.name or "",
+    text = event.text or "",
+    kind = event.kind or "text",
+    ts = tonumber(event.ts) or 0,
+    me = event.me == true,
+    truncated = event.truncated == true,
+    backlog = event.backlog == true,
+    muted = event.muted == true,
+  }
+  table.insert(recent, m)
+  while #recent > MAX_RECENT do
+    table.remove(recent, 1)
+  end
+  noctalia.state.set(common.KEY_MESSAGES, { seq = seq, items = recent })
+  notify(m)
+end
+
+-- Notification button or body click: open the panel on that chat.
+function onNotifyAction(_id, context)
+  if type(context) ~= "string" or context == "" then
+    return
+  end
+  noctalia.state.set(common.KEY_OPEN_CHAT, { jid = context, at = noctalia.nowMs() })
+  if noctalia.state.get(common.KEY_PANEL_OPEN) ~= true then
+    noctalia.togglePanel(common.panelId())
+  end
 end
 
 local function onLine(line: string)
@@ -107,8 +195,9 @@ local function onLine(line: string)
       onChats(pendingChats)
       pendingChats = nil
     end
+  elseif event.type == "message" then
+    onMessage(event)
   end
-  -- "message" and "history" are handled by the conversation view (phase 3).
 end
 
 local function startDaemon()

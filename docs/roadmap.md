@@ -16,8 +16,8 @@ Estrutura, AGENTS.md (agnóstico de ferramenta), papéis de agentes, arquitetura
 - [x] Painel: tela de QR e lista de conversas
 
 ## Fase 3: Conversa
-- [ ] Abrir conversa, histórico, campo de envio
-- [ ] Marcar como lida; notificação com botão "Responder"
+- [x] Abrir conversa, histórico, campo de envio
+- [x] Marcar como lida; notificação com botão "Responder"
 
 ## Depois
 Mídia (imagens, áudio), grupos, figurinhas, busca, múltiplas contas.

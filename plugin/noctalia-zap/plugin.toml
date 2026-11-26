@@ -1,7 +1,7 @@
 id = "claudio-asj/noctalia-zap"
 name = "Noctalia Zap"
 version = "0.1.0"
-plugin_api = 43
+plugin_api = 56
 author = "claudio-asj"
 license = "MIT"
 dependencies = ["noctalia-zapd"]
@@ -74,6 +74,20 @@ key = "hide_when_empty"
 type = "bool"
 label_key = "settings.hide_when_empty.label"
 description_key = "settings.hide_when_empty.description"
+default = false
+
+[[setting]]
+key = "notifications"
+type = "bool"
+label_key = "settings.notifications.label"
+description_key = "settings.notifications.description"
+default = true
+
+[[setting]]
+key = "notify_private"
+type = "bool"
+label_key = "settings.notify_private.label"
+description_key = "settings.notify_private.description"
 default = false
 
 [[setting]]

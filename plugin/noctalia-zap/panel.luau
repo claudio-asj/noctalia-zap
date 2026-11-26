@@ -1,5 +1,6 @@
 --!nonstrict
--- Panel: QR login, then the chat list. The conversation view arrives in phase 3.
+-- Panel: QR login, the chat list and the open conversation.
+-- Message text only travels through files in the private data dir, never argv.
 
 local common = require("./lib/common.luau")
 local style = require("./lib/style.luau")
@@ -9,13 +10,33 @@ local qr = noctalia.state.get(common.KEY_QR)
 local chats = noctalia.state.get(common.KEY_CHATS) or {}
 local daemon = noctalia.state.get(common.KEY_DAEMON)
 
+local dataDir = noctalia.pluginDataDir()
+
+local HISTORY_LIMIT = 50
+local MAX_LOADED = 200 -- messages kept for the open chat
+-- Rows drawn in the chat list. A scroll takes at most 256 children and every
+-- row costs render time; search reaches the rest.
+local MAX_ROWS = 80
+
 local isOpen = false
 local query = ""
 local selected = nil
-local hovered = nil
 local confirmLogout = false
 local busy = false
 local actionError = nil
+
+-- Open conversation.
+local messages = {} -- oldest first
+local messageIds = {} -- id -> true, to drop duplicates
+local loadingHistory = false
+local historyError = false
+local lastSeq = (noctalia.state.get(common.KEY_MESSAGES) or {}).seq or 0
+local lastOpenChat = 0
+local draft = ""
+local composerRev = 0
+local sending = false
+local sendError = false
+local scrollRev = 0
 
 local render -- forward declaration
 
@@ -41,6 +62,164 @@ local function ctl(args: { string }, onDone: ((boolean) -> ())?)
     end
     render()
   end, 30000)
+end
+
+-- ── Conversation ──────────────────────────────────────────────────────────
+
+local function publishActive()
+  noctalia.state.set(common.KEY_ACTIVE_CHAT, if isOpen then selected else nil)
+end
+
+local function chatByJid(jid)
+  for _, c in chats do
+    if c.jid == jid then
+      return c
+    end
+  end
+  return nil
+end
+
+local function addMessage(m)
+  if m.id ~= "" and messageIds[m.id] then
+    return false
+  end
+  if m.id ~= "" then
+    messageIds[m.id] = true
+  end
+  table.insert(messages, m)
+  while #messages > MAX_LOADED do
+    local old = table.remove(messages, 1)
+    messageIds[old.id] = nil
+  end
+  return true
+end
+
+-- Sends read receipts for the open chat. Fire and forget: the chat list
+-- updates through the service when the daemon clears the counter.
+local function markRead(jid)
+  if daemon == nil then
+    return
+  end
+  noctalia.runAsync({ daemon, "ctl", "read", jid }, function(_r) end, 30000)
+end
+
+local function loadHistory(jid, limit)
+  if daemon == nil then
+    return
+  end
+  loadingHistory = true
+  historyError = false
+  noctalia.runAsync({ daemon, "ctl", "history", jid, tostring(limit) }, function(r)
+    if selected ~= jid then
+      return -- the user moved on
+    end
+    loadingHistory = false
+    if r.stdoutTruncated and limit > 10 then
+      -- Too much text for one read: ask for fewer messages.
+      loadHistory(jid, math.floor(limit / 2))
+      return
+    end
+    local resp = noctalia.json.decode(r.stdout or "")
+    if r.exitCode ~= 0 or type(resp) ~= "table" or type(resp.data) ~= "table" then
+      historyError = true
+      render()
+      return
+    end
+    -- Live messages that arrived meanwhile are kept; history goes before them.
+    local live = messages
+    messages, messageIds = {}, {}
+    for _, m in resp.data do
+      addMessage({
+        id = m.id or "",
+        from = m.from or "",
+        name = m.name or "",
+        text = m.text or "",
+        kind = m.kind or "text",
+        ts = tonumber(m.ts) or 0,
+        me = m.me == true,
+      })
+    end
+    for _, m in live do
+      addMessage(m)
+    end
+    scrollRev += 1
+    render()
+  end, 30000)
+end
+
+local function selectChat(jid)
+  if jid == selected then
+    return
+  end
+  selected = jid
+  messages, messageIds = {}, {}
+  draft = ""
+  composerRev += 1
+  sendError = false
+  publishActive()
+  loadHistory(jid, HISTORY_LIMIT)
+  local c = chatByJid(jid)
+  if c and c.unread > 0 then
+    markRead(jid)
+  end
+  render()
+end
+
+local function send()
+  local text = noctalia.string.trim(draft)
+  if text == "" or sending or selected == nil or daemon == nil or dataDir == nil then
+    return
+  end
+  -- The text goes through a file in the private data dir, never argv.
+  local path = `{dataDir}/outbox-{math.floor(noctalia.nowMs())}.txt`
+  local ok = noctalia.writeFile(path, text)
+  if not ok then
+    sendError = true
+    render()
+    return
+  end
+  sending = true
+  sendError = false
+  local jid = selected
+  noctalia.runAsync({ daemon, "ctl", "send", jid, "--file", path }, function(r)
+    sending = false
+    noctalia.removeFile(path) -- ctl removes it; this covers early failures
+    if r.exitCode == 0 then
+      if selected == jid then
+        draft = ""
+        composerRev += 1 -- a new key empties the uncontrolled input
+      end
+    else
+      sendError = true
+    end
+    render()
+  end, 60000)
+  render()
+end
+
+-- Live messages from the service.
+local function onMessages(value)
+  if type(value) ~= "table" or type(value.items) ~= "table" then
+    return
+  end
+  local changed = false
+  local incoming = false
+  for _, m in value.items do
+    if m.seq > lastSeq then
+      lastSeq = m.seq
+      if m.chat == selected and addMessage(m) then
+        changed = true
+        incoming = incoming or not m.me
+      end
+    end
+  end
+  if changed then
+    scrollRev += 1
+    if incoming and isOpen then
+      markRead(selected)
+    end
+    render()
+  end
 end
 
 -- ── Pieces ────────────────────────────────────────────────────────────────
@@ -137,13 +316,7 @@ local function badge(count: number)
 end
 
 local function chatRow(c)
-  local isSelected = selected == c.jid
-  local fill = nil
-  if isSelected then
-    fill = "primary/0.15"
-  elseif hovered == c.jid then
-    fill = "hover"
-  end
+  local fill = if selected == c.jid then "primary/0.15" else nil
   local bottom = {
     ui.label({
       text = common.preview(c.last, c.lastKind),
@@ -163,13 +336,8 @@ local function chatRow(c)
     radius = style.radius.card,
     align = "center",
     fill = fill,
-    onHover = function(state, _key)
-      hovered = if state == "true" then c.jid else nil
-      render()
-    end,
     onClick = function()
-      selected = c.jid
-      render()
+      selectChat(c.jid)
     end,
   }, {
     avatar(c.name),
@@ -192,8 +360,13 @@ end
 
 local function chatList()
   local rows = {}
+  local more = false
   for _, c in chats do
     if common.matches(c.name, query) then
+      if #rows >= MAX_ROWS then
+        more = true
+        break
+      end
       table.insert(rows, chatRow(c))
     end
   end
@@ -202,6 +375,15 @@ local function chatList()
     return ui.column({ flexGrow = 1, align = "center", justify = "center" }, {
       ui.label({ text = text, fontSize = style.font.body, color = "on_surface_variant", textAlign = "center" }),
     })
+  end
+  if more then
+    table.insert(rows, ui.label({
+      key = "more",
+      text = noctalia.tr("panel.list.more"),
+      fontSize = style.font.caption,
+      color = "on_surface_variant",
+      textAlign = "center",
+    }))
   end
   return ui.scroll({ flexGrow = 1, gap = style.gap.xs }, rows)
 end
@@ -261,6 +443,135 @@ local function logoutConfirm()
   })
 end
 
+local function dayLabel(ts: number): string
+  if noctalia.formatTime("%Y-%m-%d", ts) == noctalia.formatTime("%Y-%m-%d") then
+    return noctalia.tr("panel.chat.today")
+  end
+  return noctalia.formatTime("%d/%m/%Y", ts)
+end
+
+local function bubble(m, showSender: boolean)
+  local mine = m.me
+  local children = {}
+  if showSender and not mine and m.name ~= "" then
+    table.insert(children, ui.label({
+      text = m.name,
+      fontSize = style.font.caption,
+      fontWeight = "medium",
+      color = "secondary",
+      maxLines = 1,
+    }))
+  end
+  local textColor = if mine then "on_primary_container" else "on_surface"
+  if m.kind ~= "text" then
+    table.insert(children, ui.row({ gap = style.gap.xs, align = "center" }, {
+      ui.glyph({ name = common.kindGlyph(m.kind), size = 14, color = textColor }),
+      ui.label({ text = noctalia.tr("kind." .. m.kind), fontSize = style.font.body, color = textColor }),
+    }))
+  end
+  if m.text ~= "" then
+    table.insert(children, ui.label({
+      text = m.text,
+      fontSize = style.font.body,
+      color = textColor,
+      maxWidth = style.bubbleMax,
+    }))
+  end
+  local footer = noctalia.formatTime("%H:%M", m.ts)
+  if m.truncated then
+    footer = noctalia.tr("panel.chat.truncated") .. " · " .. footer
+  end
+  table.insert(children, ui.label({
+    text = footer,
+    fontSize = style.font.caption,
+    color = if mine then "on_primary_container/0.7" else "on_surface_variant",
+    textAlign = "end",
+  }))
+  return ui.row({ key = m.id, justify = if mine then "end" else "start" }, {
+    ui.column({
+      gap = style.gap.xs,
+      padding = style.padding.sm,
+      radius = style.radius.card,
+      fill = if mine then "primary_container" else "surface_container_high",
+    }, children),
+  })
+end
+
+local function messageList(group: boolean)
+  if #messages == 0 then
+    local text
+    if loadingHistory then
+      text = noctalia.tr("panel.chat.loading")
+    elseif historyError then
+      text = noctalia.tr("panel.chat.history_error")
+    else
+      text = noctalia.tr("panel.chat.empty")
+    end
+    return ui.column({ flexGrow = 1, align = "center", justify = "center" }, {
+      ui.label({ text = text, fontSize = style.font.body, color = "on_surface_variant" }),
+    })
+  end
+  local rows = {}
+  local lastDay = nil
+  for _, m in messages do
+    local day = noctalia.formatTime("%Y-%m-%d", m.ts)
+    if day ~= lastDay then
+      lastDay = day
+      table.insert(rows, ui.row({ key = "day-" .. day, justify = "center" }, {
+        ui.label({ text = dayLabel(m.ts), fontSize = style.font.caption, color = "on_surface_variant" }),
+      }))
+    end
+    table.insert(rows, bubble(m, group))
+  end
+  return ui.scroll({ flexGrow = 1, gap = style.gap.sm, stickToBottom = true, scrollToBottomRev = scrollRev }, rows)
+end
+
+local function composer()
+  local connected = status.state == "connected"
+  local children = {
+    ui.input({
+      key = "composer-" .. composerRev,
+      placeholder = noctalia.tr(if connected then "panel.chat.placeholder" else "panel.chat.offline"),
+      multiline = true,
+      submitOnEnter = true,
+      frameVisible = false,
+      flexGrow = 1,
+      focus = true,
+      enabled = connected and not sending,
+      onChange = function(text)
+        draft = text
+      end,
+      onSubmit = function(text)
+        draft = text
+        send()
+      end,
+    }),
+    ui.button({
+      glyph = "send",
+      variant = "primary",
+      tooltip = noctalia.tr("panel.chat.send"),
+      enabled = connected and not sending,
+      onClick = function()
+        send()
+      end,
+    }),
+  }
+  local box = ui.row({
+    gap = style.gap.md,
+    padding = style.padding.sm,
+    radius = style.radius.card,
+    fill = "surface_container_highest",
+    align = "center",
+  }, children)
+  if sendError then
+    return ui.column({ gap = style.gap.xs }, {
+      ui.label({ text = noctalia.tr("panel.chat.send_error"), fontSize = style.font.caption, color = "error" }),
+      box,
+    })
+  end
+  return box
+end
+
 local function conversationPane()
   if selected == nil then
     return ui.column({ flexGrow = 1, align = "center", justify = "center", gap = style.gap.md }, {
@@ -268,22 +579,28 @@ local function conversationPane()
       ui.label({ text = noctalia.tr("panel.chat.pick"), fontSize = style.font.body, color = "on_surface_variant" }),
     })
   end
-  local name = ""
-  for _, c in chats do
-    if c.jid == selected then
-      name = c.name
-      break
-    end
-  end
-  return ui.column({ flexGrow = 1, gap = style.gap.lg }, {
+  local c = chatByJid(selected)
+  local name = if c then c.name else selected
+  return ui.column({ flexGrow = 1, gap = style.gap.md }, {
     ui.row({ gap = style.gap.md, align = "center" }, {
       avatar(name),
       ui.label({ text = name, fontSize = style.font.title, fontWeight = "bold", color = "on_surface", maxLines = 1, flexGrow = 1 }),
+      ui.button({
+        glyph = "x",
+        variant = "ghost",
+        controlSize = "sm",
+        tooltip = noctalia.tr("panel.chat.close"),
+        onClick = function()
+          selected = nil
+          messages, messageIds = {}, {}
+          publishActive()
+          render()
+        end,
+      }),
     }),
     ui.separator({ color = "outline_variant" }),
-    ui.column({ flexGrow = 1, align = "center", justify = "center" }, {
-      ui.label({ text = noctalia.tr("panel.chat.soon"), fontSize = style.font.body, color = "on_surface_variant" }),
-    }),
+    messageList(common.isGroup(selected)),
+    composer(),
   })
 end
 
@@ -361,15 +678,37 @@ noctalia.state.watch(common.KEY_DAEMON, function(value)
   daemon = value
   render()
 end)
+noctalia.state.watch(common.KEY_MESSAGES, onMessages)
+
+-- A notification asked to open a chat.
+local function checkOpenChat(value)
+  if type(value) == "table" and type(value.jid) == "string" and (value.at or 0) > lastOpenChat then
+    lastOpenChat = value.at or 0
+    selectChat(value.jid)
+  end
+end
+noctalia.state.watch(common.KEY_OPEN_CHAT, checkOpenChat)
 
 function onOpen(_context)
   isOpen = true
   actionError = nil
+  noctalia.state.set(common.KEY_PANEL_OPEN, true)
+  publishActive()
+  checkOpenChat(noctalia.state.get(common.KEY_OPEN_CHAT))
+  if selected ~= nil then
+    -- Messages may have arrived while closed: reload and acknowledge them.
+    loadHistory(selected, HISTORY_LIMIT)
+    local c = chatByJid(selected)
+    if c and c.unread > 0 then
+      markRead(selected)
+    end
+  end
   render()
 end
 
 function onClose()
   isOpen = false
-  hovered = nil
   confirmLogout = false
+  noctalia.state.set(common.KEY_PANEL_OPEN, false)
+  publishActive()
 end

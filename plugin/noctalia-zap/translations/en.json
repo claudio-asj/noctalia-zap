@@ -64,11 +64,21 @@
       "title": "Chats",
       "search": "Search chats",
       "empty": "No chats yet. They show up as WhatsApp syncs.",
-      "no_match": "No chat matches the search."
+      "no_match": "No chat matches the search.",
+      "more": "Showing the most recent chats. Search to find older ones."
     },
     "chat": {
       "pick": "Pick a chat on the left.",
-      "soon": "Reading and sending messages comes in the next version."
+      "today": "Today",
+      "truncated": "Shortened",
+      "loading": "Loading messages…",
+      "history_error": "Could not load the messages.",
+      "empty": "No messages saved for this chat yet.",
+      "placeholder": "Write a message",
+      "offline": "Not connected",
+      "send": "Send (Enter)",
+      "send_error": "The message was not sent. Try again.",
+      "close": "Close chat"
     },
     "logout": {
       "button": "Log out",
@@ -101,6 +111,19 @@
         "large": "Large (1200 × 800)",
         "full": "Full screen"
       }
+    },
+    "notifications": {
+      "label": "Notifications",
+      "description": "Show a notification for new messages. Muted chats stay silent."
+    },
+    "notify_private": {
+      "label": "Hide text in notifications",
+      "description": "Show only \"New message\" instead of the message text."
     }
+  },
+  "notify": {
+    "group_title": "{sender} · {chat}",
+    "hidden": "New message",
+    "reply": "Reply"
   }
 }
