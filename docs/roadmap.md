@@ -39,10 +39,11 @@ Estrutura, AGENTS.md (agnóstico de ferramenta), papéis de agentes, arquitetura
 - **Pronto quando:** nomes e fotos certos no painel ✅ (testado em 2026-11-26)
 
 ## Fase 6: Conversa completa
-- [ ] Respostas citadas e responder a uma mensagem
-- [ ] Reações; mensagens editadas e apagadas
-- [ ] Status de entrega (enviado, entregue, lido) e "digitando…"
-- [ ] Carregar mensagens antigas ao rolar para cima
+- [x] Respostas citadas e responder a uma mensagem
+- [x] Reações; mensagens editadas e apagadas
+- [x] Status de entrega (enviado, entregue, lido) e "digitando…"
+- [x] Carregar mensagens antigas (botão no topo; pede ao celular quando o banco acaba)
+- [x] Online só com a conversa aberta no painel (para receber o "digitando…")
 
 ## Fase 7: Enviar mídia
 - [ ] Colar imagem da área de transferência

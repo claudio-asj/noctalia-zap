@@ -27,6 +27,12 @@ type Request struct {
 	Text  string `json:"text,omitempty"`
 	ID    string `json:"id,omitempty"`
 	Limit int    `json:"limit,omitempty"`
+	// Reply is the id of the message a send replies to.
+	Reply string `json:"reply,omitempty"`
+	// Before limits history to messages older than this unix time.
+	Before int64 `json:"before,omitempty"`
+	// Older makes backfill ask for messages older than the oldest stored.
+	Older bool `json:"older,omitempty"`
 }
 
 // Response answers a Request.
@@ -199,11 +205,15 @@ func runCtl(socket string, args []string) int {
 const ctlUsage = `commands:
   status
   chats
-  history <chat-jid> [limit]
+  history <chat-jid> [limit] [--before <unix-ts>]
   send <chat-jid> <text>     (use "-" as text to read it from stdin)
   send <chat-jid> --file <path>  (text read from the file, which is then removed)
+  send ... [--reply <msg-id>]  (reply to a message; also valid with - and --file)
+  react <chat-jid> <msg-id> [emoji]  (no emoji removes my reaction)
   read <chat-jid>
-  backfill <chat-jid>        (ask the phone to resend recent history)
+  backfill <chat-jid> [--older]  (ask the phone to resend recent or older history)
+  presence [chat-jid]        (online + typing of the chat; no chat: offline)
+  typing <chat-jid> composing|paused
   avatar <chat-jid>          (refresh the chat's profile picture if due)
   media <chat-jid> <msg-id>  (download if needed, print the file path)
   play <chat-jid> <msg-id>
@@ -223,11 +233,41 @@ func parseCtlArgs(args []string) (Request, error) {
 		if len(rest) != 0 {
 			return req, fmt.Errorf("%s takes no arguments", req.Cmd)
 		}
-	case "backfill", "avatar":
+	case "avatar":
 		if len(rest) != 1 {
 			return req, fmt.Errorf("usage: %s <chat-jid>", req.Cmd)
 		}
 		req.Chat = rest[0]
+	case "backfill":
+		switch {
+		case len(rest) == 1:
+			req.Chat = rest[0]
+		case len(rest) == 2 && rest[1] == "--older":
+			req.Chat, req.Older = rest[0], true
+		default:
+			return req, errors.New("usage: backfill <chat-jid> [--older]")
+		}
+	case "presence":
+		switch len(rest) {
+		case 0:
+		case 1:
+			req.Chat = rest[0]
+		default:
+			return req, errors.New("usage: presence [chat-jid]")
+		}
+	case "typing":
+		if len(rest) != 2 || (rest[1] != "composing" && rest[1] != "paused") {
+			return req, errors.New("usage: typing <chat-jid> composing|paused")
+		}
+		req.Chat, req.Text = rest[0], rest[1]
+	case "react":
+		if len(rest) < 2 || len(rest) > 3 || rest[1] == "" {
+			return req, errors.New("usage: react <chat-jid> <msg-id> [emoji]")
+		}
+		req.Chat, req.ID = rest[0], rest[1]
+		if len(rest) == 3 {
+			req.Text = rest[2]
+		}
 	case "read":
 		if len(rest) != 1 {
 			return req, errors.New("usage: read <chat-jid>")
@@ -239,8 +279,17 @@ func parseCtlArgs(args []string) (Request, error) {
 		}
 		req.Chat, req.ID = rest[0], rest[1]
 	case "history":
+		const usage = "usage: history <chat-jid> [limit] [--before <unix-ts>]"
+		if n := len(rest); n >= 3 && rest[n-2] == "--before" {
+			ts, err := strconv.ParseInt(rest[n-1], 10, 64)
+			if err != nil || ts <= 0 {
+				return req, errors.New("before must be a positive unix time")
+			}
+			req.Before = ts
+			rest = rest[:n-2]
+		}
 		if len(rest) < 1 || len(rest) > 2 {
-			return req, errors.New("usage: history <chat-jid> [limit]")
+			return req, errors.New(usage)
 		}
 		req.Chat = rest[0]
 		if len(rest) == 2 {
@@ -251,13 +300,20 @@ func parseCtlArgs(args []string) (Request, error) {
 			req.Limit = n
 		}
 	case "send":
+		if n := len(rest); n >= 4 && rest[n-2] == "--reply" {
+			if rest[n-1] == "" {
+				return req, errors.New("reply id is empty")
+			}
+			req.Reply = rest[n-1]
+			rest = rest[:n-2]
+		}
 		switch {
 		case len(rest) == 2:
 			req.Chat, req.Text = rest[0], rest[1]
 		case len(rest) == 3 && rest[1] == "--file":
 			req.Chat, req.File = rest[0], rest[2]
 		default:
-			return req, errors.New("usage: send <chat-jid> <text> | send <chat-jid> - | send <chat-jid> --file <path>")
+			return req, errors.New("usage: send <chat-jid> <text> | send <chat-jid> - | send <chat-jid> --file <path> [--reply <msg-id>]")
 		}
 	default:
 		return req, fmt.Errorf("unknown command %q", req.Cmd)

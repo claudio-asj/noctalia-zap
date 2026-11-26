@@ -17,6 +17,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/proto/waHistorySync"
+	"go.mau.fi/whatsmeow/proto/waWeb"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
@@ -297,6 +298,13 @@ func (d *Daemon) handleEvent(raw any) {
 	case *events.Connected:
 		d.setStatus(StateConnected, "")
 		d.scheduleChats()
+		// Stay unavailable so the phone keeps notifying; the plugin asks for
+		// presence only while a conversation is open.
+		d.setPresence(ctx, types.PresenceUnavailable)
+	case *events.Receipt:
+		d.handleReceipt(ctx, evt)
+	case *events.ChatPresence:
+		d.handleChatPresence(ctx, evt)
 	case *events.Picture:
 		// Changed or removed: checked again the next time the chat is opened.
 		_ = d.store.SetAvatar(ctx, d.chatKey(ctx, evt.JID).String(), "", 0)
@@ -395,10 +403,13 @@ func (d *Daemon) chatKey(ctx context.Context, jid types.JID) types.JID {
 }
 
 func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bool) {
-	if ignoredChat(evt.Info.Chat) || evt.IsEdit {
+	if ignoredChat(evt.Info.Chat) {
 		return
 	}
 	chat := d.chatKey(ctx, evt.Info.Chat)
+	if d.handleChange(ctx, evt, chat, live) {
+		return
+	}
 	// whatsmeow unwraps Lottie stickers but not stickers with sound.
 	if inner := evt.Message.GetAudioStickerMessage().GetMessage(); inner != nil {
 		evt.Message = inner
@@ -423,6 +434,10 @@ func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bo
 			msg.Name = evt.Info.PushName
 		}
 	}
+	msg.Quote = d.buildQuote(ctx, evt.Message)
+	if !live && me {
+		msg.Ack = historyAck(evt.SourceWebMsg)
+	}
 	mp := extractMedia(evt.Message)
 	if mp != nil {
 		info := mp.Info
@@ -434,6 +449,11 @@ func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bo
 		return
 	}
 	if !inserted {
+		if lvl := ackLevel(msg.Ack); me && lvl > ackSent {
+			if _, err := d.store.SetAck(ctx, msg.Chat, []string{msg.ID}, lvl); err != nil {
+				log.Printf("history ack: %v", err)
+			}
+		}
 		// Already stored: a history resend may bring the download data that
 		// older rows lack.
 		if mp != nil {
@@ -497,6 +517,46 @@ func (d *Daemon) emitMessage(ctx context.Context, msg Message, backlog bool) {
 	d.emit.Emit(ev)
 }
 
+// buildUpdate prepares the update event of a message: text cut and reactions
+// trimmed until the encoded line fits.
+func buildUpdate(msg Message) UpdateEvent {
+	msg.Raw = nil
+	msg.Name, _ = clip(msg.Name, maxPreviewText)
+	ev := UpdateEvent{Type: "update", Message: msg}
+	limit := maxEventText
+	for {
+		ev.Message.Text, ev.Truncated = clip(msg.Text, limit)
+		b, err := json.Marshal(ev)
+		if err != nil || len(b) <= maxPageBytes || limit == 0 {
+			break
+		}
+		limit /= 2
+	}
+	for {
+		b, err := json.Marshal(ev)
+		if err != nil || len(b) <= maxPageBytes || len(ev.Message.Reactions) == 0 {
+			break
+		}
+		ev.Message.Reactions = ev.Message.Reactions[:len(ev.Message.Reactions)/2]
+	}
+	return ev
+}
+
+// emitUpdate sends the current state of a stored message.
+func (d *Daemon) emitUpdate(ctx context.Context, chat, id string) {
+	msg, found, err := d.store.Lookup(ctx, chat, id)
+	if err != nil {
+		log.Printf("update lookup: %v", err)
+		return
+	}
+	if !found {
+		return
+	}
+	fillMedia(d.cfg.DataDir, &msg)
+	d.fillQuoteNames(ctx, []Message{msg})
+	d.emit.Emit(buildUpdate(msg))
+}
+
 func (d *Daemon) isMuted(ctx context.Context, chat string) bool {
 	jid, err := types.ParseJID(chat)
 	if err != nil {
@@ -530,12 +590,30 @@ func (d *Daemon) handleHistory(ctx context.Context, evt *events.HistorySync) {
 		if len(msgs) > d.cfg.HistoryLimit {
 			msgs = msgs[:d.cfg.HistoryLimit]
 		}
+		// Messages first, then reactions, edits and deletions: the history
+		// order is not guaranteed, and changes need their target stored.
+		var changes []func()
 		for _, hm := range msgs {
-			parsed, err := c.ParseWebMessage(raw, hm.GetMessage())
+			wm := hm.GetMessage()
+			if wm.GetMessageStubType() == waWeb.WebMessageInfo_REVOKE {
+				// The phone replaced a deleted message with a stub that keeps its id.
+				id := wm.GetKey().GetID()
+				changes = append(changes, func() { d.revokeMessage(ctx, jid.String(), id, false) })
+				continue
+			}
+			parsed, err := c.ParseWebMessage(raw, wm)
 			if err != nil {
 				continue
 			}
+			if isChange(parsed) {
+				changes = append(changes, func() { d.handleMessage(ctx, parsed, false) })
+				continue
+			}
 			d.handleMessage(ctx, parsed, false)
+			d.applyWebReactions(ctx, jid, wm)
+		}
+		for _, apply := range changes {
+			apply()
 		}
 		if onDemand {
 			// Fetch the previews the resend left out, then tell the plugin.
@@ -730,6 +808,12 @@ func (d *Daemon) Handle(ctx context.Context, req Request) Response {
 		return d.cmdAvatar(ctx, req)
 	case "send":
 		return d.cmdSend(ctx, req)
+	case "react":
+		return d.cmdReact(ctx, req)
+	case "presence":
+		return d.cmdPresence(ctx, req)
+	case "typing":
+		return d.cmdTyping(ctx, req)
 	case "read":
 		return d.cmdRead(ctx, req)
 	case "media":
@@ -771,13 +855,14 @@ func (d *Daemon) cmdHistory(ctx context.Context, req Request) Response {
 		limit = d.cfg.HistoryLimit
 	}
 	limit = min(limit, maxHistoryLimit)
-	msgs, err := d.store.History(ctx, jid.String(), limit)
+	msgs, err := d.store.History(ctx, jid.String(), limit, req.Before)
 	if err != nil {
 		return fail(err)
 	}
 	for i := range msgs {
 		fillMedia(d.cfg.DataDir, &msgs[i])
 	}
+	d.fillQuoteNames(ctx, msgs)
 	return Response{OK: true, Data: msgs}
 }
 
@@ -805,21 +890,52 @@ func (d *Daemon) cmdSend(ctx context.Context, req Request) Response {
 	if err != nil {
 		return fail(err)
 	}
+	outgoing := &waE2E.Message{Conversation: proto.String(req.Text)}
+	var quote *Quote
+	if req.Reply != "" {
+		orig, found, err := d.store.Lookup(ctx, jid.String(), req.Reply)
+		if err != nil {
+			return fail(err)
+		}
+		if !found {
+			return Response{Error: "not_found"}
+		}
+		participant := orig.From
+		if orig.Me {
+			participant = me.String()
+		}
+		outgoing = &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String(req.Text),
+			ContextInfo: &waE2E.ContextInfo{
+				StanzaID:      proto.String(orig.ID),
+				Participant:   proto.String(participant),
+				QuotedMessage: &waE2E.Message{Conversation: proto.String(orig.Text)},
+			},
+		}}
+		text, _ := clip(orig.Text, maxPreviewText)
+		quote = &Quote{ID: orig.ID, From: participant, Text: text, Kind: orig.Kind}
+		if quote.Kind == "" {
+			quote.Kind = KindText
+		}
+		d.fillQuoteNames(ctx, []Message{{Quote: quote}})
+	}
 	sctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	resp, err := c.SendMessage(sctx, jid, &waE2E.Message{Conversation: proto.String(req.Text)})
+	resp, err := c.SendMessage(sctx, jid, outgoing)
 	if err != nil {
 		log.Printf("send failed: %v", err)
 		return Response{Error: "send failed"}
 	}
 	msg := Message{
-		ID:   resp.ID,
-		Chat: jid.String(),
-		From: me.String(),
-		Text: req.Text,
-		Kind: KindText,
-		TS:   resp.Timestamp.Unix(),
-		Me:   true,
+		Quote: quote,
+		Ack:   "sent",
+		ID:    resp.ID,
+		Chat:  jid.String(),
+		From:  me.String(),
+		Text:  req.Text,
+		Kind:  KindText,
+		TS:    resp.Timestamp.Unix(),
+		Me:    true,
 	}
 	if _, err := d.store.AddMessage(ctx, msg, false); err != nil {
 		log.Printf("store sent message: %v", err)
@@ -925,7 +1041,10 @@ func (d *Daemon) cmdLogout(ctx context.Context) Response {
 }
 
 // backfillGap keeps a chat from being asked again while the phone answers.
-const backfillGap = 10 * time.Minute
+const (
+	backfillGap = 10 * time.Minute
+	olderGap    = 30 * time.Second
+)
 
 // cmdBackfill asks the phone to resend the recent history of a chat when it
 // has media stored without download data. The answer arrives later as a
@@ -936,24 +1055,35 @@ func (d *Daemon) cmdBackfill(ctx context.Context, req Request) Response {
 		return fail(err)
 	}
 	key := jid.String()
-	need, err := d.store.NeedsBackfill(ctx, key)
-	if err != nil {
-		return fail(err)
-	}
-	if !need {
-		return Response{OK: true, Data: map[string]any{"requested": false}}
+	// Media backfill: anchored on the newest message, only when media lacks
+	// download data. Older backfill: anchored on the oldest message.
+	gap, gapKey := backfillGap, key
+	if req.Older {
+		gap, gapKey = olderGap, key+"#older"
+	} else {
+		need, err := d.store.NeedsBackfill(ctx, key)
+		if err != nil {
+			return fail(err)
+		}
+		if !need {
+			return Response{OK: true, Data: map[string]any{"requested": false}}
+		}
 	}
 	d.mu.Lock()
-	last, asked := d.backfillAt[key]
+	last, asked := d.backfillAt[gapKey]
 	d.mu.Unlock()
-	if asked && time.Since(last) < backfillGap {
+	if asked && time.Since(last) < gap {
 		return Response{OK: true, Data: map[string]any{"requested": false}}
 	}
 	c, _, err := d.connectedClient()
 	if err != nil {
 		return fail(err)
 	}
-	id, ts, me, found, err := d.store.NewestMessage(ctx, key)
+	anchor := d.store.NewestMessage
+	if req.Older {
+		anchor = d.store.OldestMessage
+	}
+	id, ts, me, found, err := anchor(ctx, key)
 	if err != nil {
 		return fail(err)
 	}
@@ -972,7 +1102,7 @@ func (d *Daemon) cmdBackfill(ctx context.Context, req Request) Response {
 		return Response{Error: "backfill failed"}
 	}
 	d.mu.Lock()
-	d.backfillAt[key] = time.Now()
+	d.backfillAt[gapKey] = time.Now()
 	d.mu.Unlock()
 	return Response{OK: true, Data: map[string]any{"requested": true}}
 }

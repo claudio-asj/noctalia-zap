@@ -150,6 +150,16 @@ local function notify(m)
   })
 end
 
+local function pushRecent(item)
+  seq += 1
+  item.seq = seq
+  table.insert(recent, item)
+  while #recent > MAX_RECENT do
+    table.remove(recent, 1)
+  end
+  noctalia.state.set(common.KEY_MESSAGES, { epoch = epoch, seq = seq, items = recent })
+end
+
 local function onMessage(event)
   if type(event.chat) ~= "string" then
     return
@@ -159,27 +169,10 @@ local function onMessage(event)
     -- one: the panel reloads the open chat when the chat list shows it changed.
     return
   end
-  seq += 1
-  local m = {
-    seq = seq,
-    id = event.id or "",
-    chat = event.chat,
-    from = event.from or "",
-    name = event.name or "",
-    text = event.text or "",
-    kind = event.kind or "text",
-    ts = tonumber(event.ts) or 0,
-    me = event.me == true,
-    truncated = event.truncated == true,
-    media = common.copyMedia(event.media),
-    backlog = event.backlog == true,
-    muted = event.muted == true,
-  }
-  table.insert(recent, m)
-  while #recent > MAX_RECENT do
-    table.remove(recent, 1)
-  end
-  noctalia.state.set(common.KEY_MESSAGES, { epoch = epoch, seq = seq, items = recent })
+  local m = common.normalizeMessage(event)
+  m.backlog = false
+  m.muted = event.muted == true
+  pushRecent(m)
   notify(m)
 end
 
@@ -229,6 +222,26 @@ local function onLine(line: string)
     end
   elseif event.type == "message" then
     onMessage(event)
+  elseif event.type == "update" then
+    -- A stored message changed (reaction, edit, deleted): the panel replaces it.
+    local m = common.normalizeMessage(event.message)
+    if m and m.chat ~= "" then
+      m.update = true
+      m.truncated = m.truncated or event.truncated == true
+      pushRecent(m)
+    end
+  elseif event.type == "receipt" then
+    if type(event.chat) == "string" and type(event.ids) == "table" then
+      pushRecent({ receipt = true, chat = event.chat, ids = event.ids, ack = event.ack or "" })
+    end
+  elseif event.type == "typing" then
+    noctalia.state.set(common.KEY_TYPING, {
+      chat = event.chat or "",
+      from = event.from or "",
+      name = event.name or "",
+      state = event.state or "paused",
+      at = noctalia.nowMs(),
+    })
   elseif event.type == "backfill" then
     noctalia.state.set(common.KEY_BACKFILL, { chat = event.chat or "", at = noctalia.nowMs() })
   elseif event.type == "playback" then

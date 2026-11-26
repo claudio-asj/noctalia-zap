@@ -39,8 +39,13 @@ func TestMigrationOldDatabase(t *testing.T) {
 	if err != nil || !found || len(ref.Raw) != 0 || ref.Kind != KindImage {
 		t.Fatalf("ref = %+v found=%v err=%v", ref, found, err)
 	}
-	msgs, err := s.History(ctx, "c@s.whatsapp.net", 10)
-	if err != nil || len(msgs) != 1 || msgs[0].Media != nil {
+	var cols int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name IN
+		('quote_id','quote_from','quote_text','quote_kind','edited','deleted','ack')`).Scan(&cols); err != nil || cols != 7 {
+		t.Fatalf("migrated columns = %d, %v", cols, err)
+	}
+	msgs, err := s.History(ctx, "c@s.whatsapp.net", 10, 0)
+	if err != nil || len(msgs) != 1 || msgs[0].Media != nil || msgs[0].Quote != nil || msgs[0].Edited {
 		t.Fatalf("history = %+v, %v", msgs, err)
 	}
 	ok, err := s.AddMessage(ctx, Message{ID: "new", Chat: "c@s.whatsapp.net", Kind: KindAudio, TS: 6,
@@ -51,7 +56,7 @@ func TestMigrationOldDatabase(t *testing.T) {
 	if err := s.SetMediaFile(ctx, "c@s.whatsapp.net", "new", "/tmp/f.ogg"); err != nil {
 		t.Fatal(err)
 	}
-	msgs, _ = s.History(ctx, "c@s.whatsapp.net", 10)
+	msgs, _ = s.History(ctx, "c@s.whatsapp.net", 10, 0)
 	m := msgs[1].Media
 	if m == nil || m.Seconds != 3 || !m.PTT || m.File != "/tmp/f.ogg" || m.Thumb != "" {
 		t.Fatalf("media = %+v", m)

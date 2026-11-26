@@ -84,7 +84,20 @@
       "close": "Fechar conversa",
       "updating": "Atualizando…",
       "updating_media": "Buscando mídias antigas no celular…",
-      "unknown": "Desconhecido"
+      "unknown": "Desconhecido",
+      "you": "Você",
+      "reply": "Responder",
+      "cancel_reply": "Cancelar resposta",
+      "deleted": "Esta mensagem foi apagada",
+      "edited": "editada · {time}",
+      "loading_older": "Carregando mensagens antigas…",
+      "load_older": "Carregar mensagens antigas",
+      "limit_older": "As mensagens mais antigas estão no celular.",
+      "start": "Início da conversa",
+      "typing": "digitando…",
+      "typing_named": "{name} está digitando…",
+      "recording": "gravando áudio…",
+      "recording_named": "{name} está gravando áudio…"
     },
     "logout": {
       "button": "Sair",

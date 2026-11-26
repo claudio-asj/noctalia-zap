@@ -181,7 +181,7 @@ Campos novos opcionais nas mensagens (evento `message` e `history`), todos com `
 Eventos novos:
 
 ```json
-{"type":"update","message":{...mensagem completa, mesmo formato do history...}}
+{"type":"update","message":{...mensagem completa, mesmo formato do history...},"truncated":false}
 {"type":"receipt","chat":"jid","ids":["msgid"],"ack":"delivered|read"}
 {"type":"typing","chat":"jid","from":"jid","name":"...","state":"composing|recording|paused"}
 ```
@@ -189,7 +189,12 @@ Eventos novos:
 - `update` sai quando uma mensagem já guardada muda: reação (inclusive as minhas), edição, apagada. O plugin
   substitui a mensagem pelo `id`. Reações/edições/apagadas sobre mensagens que não estão no banco são ignoradas.
   Continua valendo o limite de ~8 KB por linha (cortar `text` como no `message`).
-- `receipt` para mensagens minhas; `ids` só os que existem no banco.
+- `receipt` para mensagens minhas; `ids` só os que existem no banco e cujo `ack` subiu, em blocos de até 100.
+- Detalhes da implementação: minha reação fica com `sender = "me"`; reação mais velha que a guardada é ignorada
+  (replay do history); revoke limpa o `last` da conversa se era a última e tira a mensagem das não lidas;
+  `react` erra com `not_found` ou `invalid emoji` (> 64 bytes); `send --reply` erra com `not_found` se a citada não
+  está no banco. O history sync também traz reações (`WebMessageInfo.Reactions`), revokes (stub REVOKE) e o `ack`.
+- Emoji de reação vai no argv do `ctl react` (é curto e não é o conteúdo de uma mensagem).
 - `typing` vem de `events.ChatPresence`; `recording` quando `Media == audio`. `from` é quem digita (útil em grupo).
 
 Comandos novos ou mudados:

@@ -59,7 +59,7 @@ func TestStoreUnreadFlow(t *testing.T) {
 		t.Fatal("unread must be cleared")
 	}
 
-	hist, err := s.History(ctx, chat, 2)
+	hist, err := s.History(ctx, chat, 2, 0)
 	if err != nil || len(hist) != 2 || hist[0].ID != "a" || hist[1].ID != "b" {
 		t.Fatalf("history = %v, %v", hist, err)
 	}

@@ -26,6 +26,7 @@ M.KEY_DAEMON = "daemon" -- path of the noctalia-zapd binary, or nil when missing
 M.KEY_MESSAGES = "messages" -- { seq = number, items = { message } }: last live messages
 M.KEY_PLAYBACK = "playback" -- { chat, id, playing }: the audio player state
 M.KEY_BACKFILL = "backfill" -- { chat, at }: the phone resent a chat's history
+M.KEY_TYPING = "typing" -- { chat, from, name, state, at }: someone is typing
 -- Written by the panel:
 M.KEY_ACTIVE_CHAT = "activeChat" -- jid shown in the open panel, or nil
 M.KEY_PANEL_OPEN = "panelOpen" -- true while a panel is open
@@ -84,6 +85,49 @@ function M.copyMedia(media): any
     mime = if type(media.mime) == "string" then media.mime else "",
     ptt = media.ptt == true,
     sound = media.sound == true,
+  }
+end
+
+-- Turns a message from the daemon (event or history) into the panel's shape,
+-- keeping only known fields with the right types.
+function M.normalizeMessage(m): any
+  if type(m) ~= "table" then
+    return nil
+  end
+  local quote = nil
+  if type(m.quote) == "table" and type(m.quote.id) == "string" then
+    quote = {
+      id = m.quote.id,
+      from = if type(m.quote.from) == "string" then m.quote.from else "",
+      name = if type(m.quote.name) == "string" then m.quote.name else "",
+      text = if type(m.quote.text) == "string" then m.quote.text else "",
+      kind = if type(m.quote.kind) == "string" then m.quote.kind else "text",
+    }
+  end
+  local reactions = {}
+  if type(m.reactions) == "table" then
+    for _, r in m.reactions do
+      if type(r) == "table" and type(r.emoji) == "string" and r.emoji ~= "" then
+        table.insert(reactions, { emoji = r.emoji, count = tonumber(r.count) or 1, me = r.me == true })
+      end
+    end
+  end
+  return {
+    id = if type(m.id) == "string" then m.id else "",
+    chat = if type(m.chat) == "string" then m.chat else "",
+    from = if type(m.from) == "string" then m.from else "",
+    name = if type(m.name) == "string" then m.name else "",
+    text = if type(m.text) == "string" then m.text else "",
+    kind = if type(m.kind) == "string" then m.kind else "text",
+    ts = tonumber(m.ts) or 0,
+    me = m.me == true,
+    truncated = m.truncated == true,
+    media = M.copyMedia(m.media),
+    quote = quote,
+    reactions = reactions,
+    edited = m.edited == true,
+    deleted = m.deleted == true,
+    ack = if type(m.ack) == "string" then m.ack else "",
   }
 end
 

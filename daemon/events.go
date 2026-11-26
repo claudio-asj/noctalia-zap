@@ -52,9 +52,91 @@ type Message struct {
 	TS   int64  `json:"ts"`
 	Me   bool   `json:"me"`
 	// Media is set for image, video, audio, document and sticker messages.
-	Media *MediaInfo `json:"media,omitempty"`
+	Media     *MediaInfo `json:"media,omitempty"`
+	Quote     *Quote     `json:"quote,omitempty"`
+	Reactions []Reaction `json:"reactions,omitempty"`
+	Edited    bool       `json:"edited,omitempty"`
+	Deleted   bool       `json:"deleted,omitempty"`
+	// Ack is the delivery state of my own messages: sent, delivered or read.
+	Ack string `json:"ack,omitempty"`
 	// Raw is the stored proto needed to download the media; never sent.
 	Raw []byte `json:"-"`
+}
+
+// Quote is the message a reply points to.
+type Quote struct {
+	ID   string `json:"id"`
+	From string `json:"from"`
+	Name string `json:"name"`
+	Text string `json:"text"`
+	Kind string `json:"kind"`
+}
+
+// Reaction is one emoji with how many people used it; Me says I am one of them.
+type Reaction struct {
+	Emoji string `json:"emoji"`
+	Count int    `json:"count"`
+	Me    bool   `json:"me"`
+}
+
+// Ack levels, stored in the ack column.
+const (
+	ackNone      = 0
+	ackSent      = 1
+	ackDelivered = 2
+	ackRead      = 3
+)
+
+// selfSender is the sender value stored for my own reactions.
+const selfSender = "me"
+
+func ackLevel(name string) int {
+	switch name {
+	case "sent":
+		return ackSent
+	case "delivered":
+		return ackDelivered
+	case "read":
+		return ackRead
+	}
+	return ackNone
+}
+
+func ackName(level int) string {
+	switch {
+	case level >= ackRead:
+		return "read"
+	case level == ackDelivered:
+		return "delivered"
+	case level == ackSent:
+		return "sent"
+	}
+	return ""
+}
+
+// UpdateEvent announces that a stored message changed (reaction, edit, delete).
+// Truncated means Message.Text was cut to keep the line short.
+type UpdateEvent struct {
+	Type      string  `json:"type"` // "update"
+	Message   Message `json:"message"`
+	Truncated bool    `json:"truncated,omitempty"`
+}
+
+// ReceiptEvent says my messages were delivered or read.
+type ReceiptEvent struct {
+	Type string   `json:"type"` // "receipt"
+	Chat string   `json:"chat"`
+	IDs  []string `json:"ids"`
+	Ack  string   `json:"ack"`
+}
+
+// TypingEvent is the "typing" indicator of a chat.
+type TypingEvent struct {
+	Type  string `json:"type"` // "typing"
+	Chat  string `json:"chat"`
+	From  string `json:"from"`
+	Name  string `json:"name"`
+	State string `json:"state"` // composing, recording, paused
 }
 
 type MessageEvent struct {

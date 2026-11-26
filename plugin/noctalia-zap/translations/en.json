@@ -84,7 +84,20 @@
       "close": "Close chat",
       "updating": "Updating…",
       "updating_media": "Fetching older media from the phone…",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "you": "You",
+      "reply": "Reply",
+      "cancel_reply": "Cancel reply",
+      "deleted": "This message was deleted",
+      "edited": "edited · {time}",
+      "loading_older": "Loading older messages…",
+      "load_older": "Load older messages",
+      "limit_older": "Older messages are on your phone.",
+      "start": "Start of the chat",
+      "typing": "typing…",
+      "typing_named": "{name} is typing…",
+      "recording": "recording audio…",
+      "recording_named": "{name} is recording audio…"
     },
     "logout": {
       "button": "Log out",

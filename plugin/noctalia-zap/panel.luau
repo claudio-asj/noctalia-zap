@@ -13,10 +13,15 @@ local daemon = noctalia.state.get(common.KEY_DAEMON)
 local dataDir = noctalia.pluginDataDir()
 
 local HISTORY_LIMIT = 50
-local MAX_LOADED = 200 -- messages kept for the open chat
--- Bubbles drawn: with day separators this stays under the 256 children a
--- scroll accepts.
+local MAX_LOADED = 400 -- messages kept for the open chat
+-- Bubbles drawn at first; each "load older" adds a page. With day separators
+-- and the top row, MAX_DRAWN_TOTAL keeps the scroll under 256 children.
 local MAX_DRAWN = 120
+local MAX_DRAWN_TOTAL = 200
+local TYPING_TIMEOUT_MS = 8000 -- someone's "typing" fades without updates
+local MY_TYPING_IDLE_S = "5" -- my "typing" turns to paused after this
+-- Quick reactions. Emoji are not translatable text.
+local QUICK_REACTIONS = { "👍", "❤️", "😂", "😮", "😢", "🙏" }
 -- Rows drawn in the chat list. A scroll takes at most 256 children and every
 -- row costs render time; search reaches the rest.
 local MAX_ROWS = 80
@@ -48,6 +53,20 @@ local scrollRev = 0
 local mediaBusy = {} -- id -> true while downloading
 local mediaError = {} -- id -> translation key of the last error
 local playback = noctalia.state.get(common.KEY_PLAYBACK) or {}
+
+-- Phase 6: actions, replies, typing, presence, older messages.
+local selectedMsg = nil -- id of the message showing its action bar
+local replyTo = nil -- message being answered
+local typing = nil -- { from, name, state, at } for the open chat
+local typingToken = 0
+local myTyping = false
+local presenceChat = nil -- chat we are "online" in, or nil
+local drawLimit = MAX_DRAWN
+local olderLoading = false -- reading older messages from the store
+local olderPending = false -- waiting for the phone to send older messages
+local olderToken = 0
+local hasMore = true -- false once the start of the chat was reached
+local revealKey = nil
 
 -- "Updating" indicator of the open chat: picture refresh and history resend.
 local avatarPending = false
@@ -144,17 +163,11 @@ local function loadHistory(jid, limit)
     -- Live messages that arrived meanwhile are kept; history goes before them.
     local live = messages
     messages, messageIds = {}, {}
-    for _, m in resp.data do
-      addMessage({
-        id = m.id or "",
-        from = m.from or "",
-        name = m.name or "",
-        text = m.text or "",
-        kind = m.kind or "text",
-        media = common.copyMedia(m.media),
-        ts = tonumber(m.ts) or 0,
-        me = m.me == true,
-      })
+    for _, raw in resp.data do
+      local m = common.normalizeMessage(raw)
+      if m then
+        addMessage(m)
+      end
     end
     for _, m in live do
       addMessage(m)
@@ -168,15 +181,189 @@ local function loadHistory(jid, limit)
   end, 30000)
 end
 
+-- Online only while a chat is open in the panel (the phone keeps notifying
+-- otherwise). nil goes back offline.
+local function setPresence(jid)
+  if daemon == nil or jid == presenceChat then
+    return
+  end
+  presenceChat = jid
+  local argv = { daemon, "ctl", "presence" }
+  if jid ~= nil then
+    table.insert(argv, jid)
+  end
+  noctalia.runAsync(argv, function(_r) end, 15000)
+end
+
+-- My "typing" state in the open chat; paused after a few idle seconds. One
+-- timer at a time, whatever the typing speed.
+local lastKeyMs = 0
+local typingTimer = false
+
+local function sendMyTyping(on: boolean)
+  if on == myTyping or daemon == nil or selected == nil then
+    return
+  end
+  myTyping = on
+  noctalia.runAsync({ daemon, "ctl", "typing", selected, if on then "composing" else "paused" }, function(_r) end, 10000)
+end
+
+local function startTypingTimer()
+  if typingTimer then
+    return
+  end
+  typingTimer = true
+  noctalia.runAsync({ "sleep", MY_TYPING_IDLE_S }, function(_r)
+    typingTimer = false
+    if not myTyping then
+      return
+    end
+    if noctalia.nowMs() - lastKeyMs >= tonumber(MY_TYPING_IDLE_S) * 1000 - 100 then
+      sendMyTyping(false)
+    else
+      startTypingTimer()
+    end
+  end, 10000)
+end
+
+local function setMyTyping(on: boolean)
+  if daemon == nil or selected == nil or presenceChat ~= selected then
+    myTyping = false
+    return
+  end
+  if on then
+    lastKeyMs = noctalia.nowMs()
+    sendMyTyping(true)
+    startTypingTimer()
+  else
+    sendMyTyping(false)
+  end
+end
+
+local function findMessage(id)
+  for i, m in messages do
+    if m.id == id then
+      return m, i
+    end
+  end
+  return nil, nil
+end
+
+-- Sends (or removes, with an empty emoji) my reaction. The change comes back
+-- as an "update" from the daemon.
+local function react(m, emoji: string)
+  if daemon == nil or selected == nil or m.id == "" then
+    return
+  end
+  local argv = { daemon, "ctl", "react", selected, m.id }
+  if emoji ~= "" then
+    table.insert(argv, emoji)
+  end
+  noctalia.runAsync(argv, function(r)
+    if r.exitCode ~= 0 then
+      actionError = noctalia.tr("panel.error.command")
+      render()
+    end
+  end, 30000)
+end
+
+-- Reads the page of messages before the oldest one shown. When the store has
+-- no more, asks the phone; its answer arrives as a "backfill" event.
+local loadOlder
+local function askPhoneForOlder(jid)
+  olderPending = true
+  olderToken += 1
+  local token = olderToken
+  noctalia.runAsync({ daemon, "ctl", "backfill", jid, "--older" }, function(r)
+    if selected ~= jid or olderToken ~= token then
+      return
+    end
+    local resp = noctalia.json.decode(r.stdout or "")
+    if r.exitCode ~= 0 or type(resp) ~= "table" or type(resp.data) ~= "table" or not resp.data.requested then
+      olderPending = false
+      hasMore = false
+      render()
+      return
+    end
+    -- The phone may be offline: stop waiting after a minute.
+    noctalia.runAsync({ "sleep", "60" }, function(_r)
+      if olderToken == token and olderPending then
+        olderPending = false
+        render()
+      end
+    end, 65000)
+  end, 30000)
+  render()
+end
+
+function loadOlder(fromPhoneAnswer: boolean?)
+  if daemon == nil or selected == nil or olderLoading or #messages == 0 then
+    return
+  end
+  if drawLimit >= MAX_DRAWN_TOTAL and not fromPhoneAnswer then
+    return
+  end
+  local jid = selected
+  local oldest = messages[1]
+  olderLoading = true
+  noctalia.runAsync({ daemon, "ctl", "history", jid, tostring(HISTORY_LIMIT), "--before", tostring(oldest.ts) }, function(r)
+    if selected ~= jid then
+      return
+    end
+    olderLoading = false
+    local resp = noctalia.json.decode(r.stdout or "")
+    if r.exitCode ~= 0 or type(resp) ~= "table" or type(resp.data) ~= "table" then
+      render()
+      return
+    end
+    local older = {}
+    for _, raw in resp.data do
+      local m = common.normalizeMessage(raw)
+      if m and (m.id == "" or not messageIds[m.id]) then
+        table.insert(older, m)
+      end
+    end
+    if #older == 0 then
+      if fromPhoneAnswer then
+        -- The phone answered and nothing older came: this is the start.
+        hasMore = false
+      else
+        askPhoneForOlder(jid)
+      end
+      render()
+      return
+    end
+    for _, m in older do
+      if m.id ~= "" then
+        messageIds[m.id] = true
+      end
+    end
+    table.move(messages, 1, #messages, #older + 1, older)
+    messages = older
+    drawLimit = math.min(MAX_DRAWN_TOTAL, drawLimit + #resp.data)
+    -- Keep the message that was on top in view.
+    revealKey = oldest.id
+    render()
+  end, 30000)
+  render()
+end
+
 local function selectChat(jid)
   if jid == selected then
     return
   end
+  setMyTyping(false)
   selected = jid
   messages, messageIds = {}, {}
   draft = ""
   composerRev += 1
   sendError = false
+  selectedMsg, replyTo, typing = nil, nil, nil
+  drawLimit, hasMore, revealKey = MAX_DRAWN, true, nil
+  olderLoading, olderPending = false, false
+  if isOpen then
+    setPresence(jid)
+  end
   publishActive()
   loadHistory(jid, HISTORY_LIMIT)
   -- Older media may lack download data: ask the phone to resend this chat's
@@ -233,12 +420,19 @@ local function send()
   sending = true
   sendError = false
   local jid = selected
-  noctalia.runAsync({ daemon, "ctl", "send", jid, "--file", path }, function(r)
+  local argv = { daemon, "ctl", "send", jid, "--file", path }
+  if replyTo ~= nil and replyTo.id ~= "" then
+    table.insert(argv, "--reply")
+    table.insert(argv, replyTo.id)
+  end
+  setMyTyping(false)
+  noctalia.runAsync(argv, function(r)
     sending = false
     noctalia.removeFile(path) -- ctl removes it; this covers early failures
     if r.exitCode == 0 then
       if selected == jid then
         draft = ""
+        replyTo = nil
         composerRev += 1 -- a new key empties the uncontrolled input
       end
     else
@@ -349,18 +543,45 @@ local function onMessages(value)
     return
   end
   local changed = false
+  local added = false
   local incoming = false
   for _, m in value.items do
     if m.seq > lastSeq then
       lastSeq = m.seq
-      if m.chat == selected and addMessage(m) then
+      if m.chat ~= selected then
+        continue
+      end
+      if m.receipt then
+        local wanted = {}
+        for _, id in m.ids do
+          wanted[id] = true
+        end
+        for _, mine in messages do
+          if wanted[mine.id] then
+            mine.ack = m.ack
+            changed = true
+          end
+        end
+      elseif m.update then
+        local _, i = findMessage(m.id)
+        if i then
+          messages[i] = m
+          changed = true
+        end
+      elseif addMessage(m) then
         changed = true
+        added = true
         incoming = incoming or not m.me
+        if typing and typing.from == m.from then
+          typing = nil -- they sent it
+        end
       end
     end
   end
   if changed then
-    scrollRev += 1
+    if added then
+      scrollRev += 1
+    end
     if incoming and isOpen then
       markRead(selected)
     end
@@ -826,9 +1047,119 @@ local function stickerBubble(m, key: string, showSender: boolean)
   })
 end
 
+-- The answered message, shown on top of a reply. Clicking scrolls to it.
+local function quoteBlock(q, mine: boolean)
+  local name = if q.name ~= "" then q.name else noctalia.tr("panel.chat.you")
+  local preview = common.preview(q.text, q.kind)
+  return ui.column({
+    gap = 2,
+    padding = style.gap.sm,
+    radius = style.radius.control,
+    fill = if mine then "on_primary_container/0.12" else "on_surface/0.08",
+    onClick = function()
+      if messageIds[q.id] then
+        revealKey = q.id
+        render()
+      end
+    end,
+  }, {
+    ui.label({
+      text = name,
+      fontSize = style.font.caption,
+      fontWeight = "medium",
+      color = if q.name == "" then "primary" else common.senderColor(q.from),
+      maxLines = 1,
+    }),
+    ui.label({
+      text = preview,
+      fontSize = style.font.caption,
+      color = if mine then "on_primary_container/0.8" else "on_surface_variant",
+      maxLines = 2,
+      maxWidth = style.bubbleMax - 20,
+    }),
+  })
+end
+
+-- Reaction chips under a bubble. Clicking one toggles my reaction with it.
+local function reactionRow(m)
+  local chips = {}
+  for _, r in m.reactions do
+    local label = if r.count > 1 then `{r.emoji} {r.count}` else r.emoji
+    table.insert(chips, ui.row({
+      key = "r-" .. r.emoji,
+      paddingH = style.gap.sm,
+      paddingV = 2,
+      radius = style.radius.card,
+      fill = if r.me then "primary/0.2" else "surface_container_highest",
+      onClick = function()
+        react(m, if r.me then "" else r.emoji)
+      end,
+    }, {
+      ui.label({ text = label, fontSize = style.font.caption, color = "on_surface" }),
+    }))
+  end
+  return ui.row({ gap = style.gap.xs, justify = if m.me then "end" else "start" }, chips)
+end
+
+-- Reply and quick reactions for the selected message.
+local function actionBar(m)
+  local mineEmoji = ""
+  for _, r in m.reactions do
+    if r.me then
+      mineEmoji = r.emoji
+    end
+  end
+  local items = {
+    ui.button({
+      glyph = "arrow-back-up",
+      variant = "ghost",
+      controlSize = "sm",
+      tooltip = noctalia.tr("panel.chat.reply"),
+      onClick = function()
+        replyTo = m
+        selectedMsg = nil
+        composerRev += 1 -- focus the input again
+        render()
+      end,
+    }),
+  }
+  for _, emoji in QUICK_REACTIONS do
+    table.insert(items, ui.button({
+      text = emoji,
+      variant = "ghost",
+      controlSize = "sm",
+      selected = emoji == mineEmoji,
+      onClick = function()
+        selectedMsg = nil
+        react(m, if emoji == mineEmoji then "" else emoji)
+        render()
+      end,
+    }))
+  end
+  return ui.row({
+    gap = style.gap.xs,
+    padding = style.gap.xs,
+    radius = style.radius.card,
+    fill = "surface_container_highest",
+    align = "center",
+  }, items)
+end
+
+-- Delivery ticks of my messages.
+local function ackGlyph(ack: string): (string?, string)
+  if ack == "read" then
+    return "checks", "primary"
+  elseif ack == "delivered" then
+    return "checks", "on_primary_container/0.7"
+  elseif ack == "sent" then
+    return "check", "on_primary_container/0.7"
+  end
+  return nil, ""
+end
+
 local function bubble(m, index: number, showSender: boolean)
   local mine = m.me
-  if m.kind == "sticker" and m.media ~= nil and m.media.thumb ~= nil then
+  if m.kind == "sticker" and m.media ~= nil and m.media.thumb ~= nil and not m.deleted then
     return stickerBubble(m, if m.id ~= "" then m.id else `msg-{index}-{m.ts}`, showSender)
   end
   local children = {}
@@ -842,9 +1173,21 @@ local function bubble(m, index: number, showSender: boolean)
     }))
   end
   local textColor = if mine then "on_primary_container" else "on_surface"
+  if m.quote and not m.deleted then
+    table.insert(children, quoteBlock(m.quote, mine))
+  end
   -- Media stored before download support has no "media" field: show the label only.
   local isMedia = MEDIA_KINDS[m.kind] == true and m.media ~= nil
-  if isMedia then
+  if m.deleted then
+    table.insert(children, ui.row({ gap = style.gap.xs, align = "center" }, {
+      ui.glyph({ name = "ban", size = 14, color = if mine then "on_primary_container/0.7" else "on_surface_variant" }),
+      ui.label({
+        text = noctalia.tr("panel.chat.deleted"),
+        fontSize = style.font.body,
+        color = if mine then "on_primary_container/0.7" else "on_surface_variant",
+      }),
+    }))
+  elseif isMedia then
     for _, part in mediaBody(m, textColor) do
       table.insert(children, part)
     end
@@ -855,7 +1198,7 @@ local function bubble(m, index: number, showSender: boolean)
     }))
   end
   -- Documents show their name in the file row; everything else shows the caption.
-  if m.text ~= "" and m.kind ~= "document" then
+  if m.text ~= "" and m.kind ~= "document" and not m.deleted then
     table.insert(children, ui.label({
       text = m.text,
       fontSize = style.font.body,
@@ -867,20 +1210,46 @@ local function bubble(m, index: number, showSender: boolean)
   if m.truncated then
     footer = noctalia.tr("panel.chat.truncated", { time = footer })
   end
-  table.insert(children, ui.label({
-    text = footer,
-    fontSize = style.font.caption,
-    color = if mine then "on_primary_container/0.7" else "on_surface_variant",
-    textAlign = "end",
-  }))
+  if m.edited and not m.deleted then
+    footer = noctalia.tr("panel.chat.edited", { time = footer })
+  end
+  local footerParts = {
+    ui.label({
+      text = footer,
+      fontSize = style.font.caption,
+      color = if mine then "on_primary_container/0.7" else "on_surface_variant",
+    }),
+  }
+  local tick, tickColor = ackGlyph(if mine then m.ack else "")
+  if tick then
+    table.insert(footerParts, ui.glyph({ name = tick, size = 12, color = tickColor }))
+  end
+  table.insert(children, ui.row({ gap = style.gap.xs, align = "center", justify = "end" }, footerParts))
+
   local key = if m.id ~= "" then m.id else `msg-{index}-{m.ts}`
-  return ui.row({ key = key, justify = if mine then "end" else "start" }, {
+  local column = {
     ui.column({
       gap = style.gap.xs,
       padding = style.padding.sm,
       radius = style.radius.card,
       fill = if mine then "primary_container" else "surface_container_high",
+      border = if selectedMsg == m.id then "primary" else nil,
+      borderWidth = if selectedMsg == m.id then 1 else nil,
+      -- Click selects the message: shows reply and reactions.
+      onClick = if m.id ~= "" and not m.deleted then function()
+        selectedMsg = if selectedMsg == m.id then nil else m.id
+        render()
+      end else nil,
     }, children),
+  }
+  if #m.reactions > 0 then
+    table.insert(column, reactionRow(m))
+  end
+  if selectedMsg == m.id then
+    table.insert(column, actionBar(m))
+  end
+  return ui.row({ key = key, justify = if mine then "end" else "start" }, {
+    ui.column({ gap = style.gap.xs, align = if mine then "end" else "start" }, column),
   })
 end
 
@@ -900,7 +1269,34 @@ local function messageList(group: boolean)
   end
   local rows = {}
   local lastDay = nil
-  local firstDrawn = math.max(1, #messages - MAX_DRAWN + 1)
+  local firstDrawn = math.max(1, #messages - drawLimit + 1)
+  -- Top of the list: load older messages, or say why not.
+  local top
+  if olderLoading or olderPending then
+    top = ui.label({ text = noctalia.tr("panel.chat.loading_older"), fontSize = style.font.caption, color = "on_surface_variant" })
+  elseif firstDrawn > 1 or (hasMore and drawLimit < MAX_DRAWN_TOTAL) then
+    top = ui.button({
+      text = noctalia.tr("panel.chat.load_older"),
+      glyph = "arrow-up",
+      variant = "ghost",
+      controlSize = "sm",
+      onClick = function()
+        if firstDrawn > 1 then
+          -- Already loaded, just not drawn.
+          drawLimit = math.min(MAX_DRAWN_TOTAL, drawLimit + HISTORY_LIMIT)
+          revealKey = messages[firstDrawn].id
+          render()
+        else
+          loadOlder()
+        end
+      end,
+    })
+  elseif drawLimit >= MAX_DRAWN_TOTAL then
+    top = ui.label({ text = noctalia.tr("panel.chat.limit_older"), fontSize = style.font.caption, color = "on_surface_variant" })
+  else
+    top = ui.label({ text = noctalia.tr("panel.chat.start"), fontSize = style.font.caption, color = "on_surface_variant" })
+  end
+  table.insert(rows, ui.row({ key = "top", justify = "center" }, { top }))
   for i = firstDrawn, #messages do
     local m = messages[i]
     local day = noctalia.formatTime("%Y-%m-%d", m.ts)
@@ -912,7 +1308,18 @@ local function messageList(group: boolean)
     end
     table.insert(rows, bubble(m, i, group))
   end
-  return ui.scroll({ flexGrow = 1, gap = style.gap.sm, stickToBottom = true, scrollToBottomRev = scrollRev }, rows)
+  -- Many different days add many separators: drop the oldest rows (keeping
+  -- the top row) so the scroll stays under its 256 children.
+  while #rows > 250 do
+    table.remove(rows, 2)
+  end
+  return ui.scroll({
+    flexGrow = 1,
+    gap = style.gap.sm,
+    stickToBottom = true,
+    scrollToBottomRev = scrollRev,
+    revealKey = revealKey,
+  }, rows)
 end
 
 local function composer()
@@ -929,6 +1336,7 @@ local function composer()
       enabled = connected and not sending,
       onChange = function(text)
         draft = text
+        setMyTyping(text ~= "")
       end,
       onSubmit = function(text)
         draft = text
@@ -952,13 +1360,37 @@ local function composer()
     fill = "surface_container_highest",
     align = "center",
   }, children)
+  local parts = {}
   if sendError then
-    return ui.column({ gap = style.gap.xs }, {
-      ui.label({ text = noctalia.tr("panel.chat.send_error"), fontSize = style.font.caption, color = "error" }),
-      box,
-    })
+    table.insert(parts, ui.label({ text = noctalia.tr("panel.chat.send_error"), fontSize = style.font.caption, color = "error" }))
   end
-  return box
+  if replyTo ~= nil then
+    table.insert(parts, ui.row({ gap = style.gap.sm, align = "center" }, {
+      ui.glyph({ name = "arrow-back-up", size = 14, color = "primary" }),
+      ui.column({ flexGrow = 1 }, { quoteBlock({
+        id = replyTo.id,
+        from = replyTo.from,
+        name = if replyTo.me then "" else replyTo.name,
+        text = replyTo.text,
+        kind = replyTo.kind,
+      }, false) }),
+      ui.button({
+        glyph = "x",
+        variant = "ghost",
+        controlSize = "sm",
+        tooltip = noctalia.tr("panel.chat.cancel_reply"),
+        onClick = function()
+          replyTo = nil
+          render()
+        end,
+      }),
+    }))
+  end
+  if #parts == 0 then
+    return box
+  end
+  table.insert(parts, box)
+  return ui.column({ gap = style.gap.xs }, parts)
 end
 
 local function conversationPane()
@@ -973,7 +1405,15 @@ local function conversationPane()
   local titleParts = {
     ui.label({ text = name, fontSize = style.font.title, fontWeight = "bold", color = "on_surface", maxLines = 1 }),
   }
-  if avatarPending or backfillPending then
+  if typing ~= nil and typing.state ~= "paused" and noctalia.nowMs() - typing.at < TYPING_TIMEOUT_MS then
+    local key = if typing.state == "recording" then "panel.chat.recording" else "panel.chat.typing"
+    local who = if common.isGroup(selected) and typing.name ~= "" then typing.name else ""
+    table.insert(titleParts, ui.label({
+      text = noctalia.tr(key .. (if who ~= "" then "_named" else ""), { name = who }),
+      fontSize = style.font.caption,
+      color = "primary",
+    }))
+  elseif avatarPending or backfillPending then
     table.insert(titleParts, ui.row({ gap = style.gap.xs, align = "center" }, {
       ui.glyph({ name = "refresh", size = 12, color = "on_surface_variant" }),
       ui.label({
@@ -993,8 +1433,11 @@ local function conversationPane()
         controlSize = "sm",
         tooltip = noctalia.tr("panel.chat.close"),
         onClick = function()
+          setMyTyping(false)
+          setPresence(nil)
           selected = nil
           messages, messageIds = {}, {}
+          selectedMsg, replyTo, typing = nil, nil, nil
           publishActive()
           render()
         end,
@@ -1091,6 +1534,13 @@ noctalia.state.watch(common.KEY_DAEMON, function(value)
 end)
 noctalia.state.watch(common.KEY_MESSAGES, onMessages)
 noctalia.state.watch(common.KEY_BACKFILL, function(value)
+  if type(value) == "table" and value.chat == selected and olderPending then
+    -- The phone sent older messages we asked for.
+    olderPending = false
+    olderToken += 1
+    loadOlder(true)
+    return
+  end
   if type(value) == "table" and value.chat == selected then
     backfillPending = false
     if isOpen and not loadingHistory then
@@ -1098,6 +1548,22 @@ noctalia.state.watch(common.KEY_BACKFILL, function(value)
     end
     render()
   end
+end)
+noctalia.state.watch(common.KEY_TYPING, function(value)
+  if type(value) ~= "table" or value.chat ~= selected then
+    return
+  end
+  typing = value
+  typingToken += 1
+  local token = typingToken
+  render()
+  -- Without new updates, "typing" fades out.
+  noctalia.runAsync({ "sleep", "9" }, function(_r)
+    if typingToken == token then
+      typing = nil
+      render()
+    end
+  end, 15000)
 end)
 noctalia.state.watch(common.KEY_PLAYBACK, function(value)
   playback = value or {}
@@ -1122,6 +1588,9 @@ function onOpen(_context)
   cleanOutbox()
   noctalia.state.set(common.KEY_PANEL_OPEN, true)
   publishActive()
+  if selected ~= nil then
+    setPresence(selected)
+  end
   checkOpenChat(noctalia.state.get(common.KEY_OPEN_CHAT))
   if selected ~= nil then
     -- Messages may have arrived while closed: reload and acknowledge them.
@@ -1138,5 +1607,8 @@ function onClose()
   isOpen = false
   confirmLogout = false
   noctalia.state.set(common.KEY_PANEL_OPEN, false)
+  setMyTyping(false)
+  setPresence(nil)
+  selectedMsg = nil
   publishActive()
 end

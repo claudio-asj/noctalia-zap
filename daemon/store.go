@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 )
@@ -39,6 +40,14 @@ CREATE TABLE IF NOT EXISTS messages (
 	PRIMARY KEY (chat, id)
 );
 CREATE INDEX IF NOT EXISTS messages_chat_ts ON messages (chat, ts);
+CREATE TABLE IF NOT EXISTS reactions (
+	chat   TEXT NOT NULL,
+	msg_id TEXT NOT NULL,
+	sender TEXT NOT NULL,
+	emoji  TEXT NOT NULL,
+	ts     INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (chat, msg_id, sender)
+);
 CREATE TABLE IF NOT EXISTS avatars (
 	jid     TEXT PRIMARY KEY,
 	pic_id  TEXT NOT NULL DEFAULT '',
@@ -63,7 +72,7 @@ func OpenMsgStore(path string) (*MsgStore, error) {
 	return &MsgStore{db: db}, nil
 }
 
-// migrate adds the media columns to databases created by earlier versions.
+// migrate adds the media and conversation columns to databases created by earlier versions.
 func migrate(db *sql.DB) error {
 	rows, err := db.Query(`PRAGMA table_info(messages)`)
 	if err != nil {
@@ -88,6 +97,13 @@ func migrate(db *sql.DB) error {
 		{"raw", "BLOB"},
 		{"media", "TEXT"},
 		{"file", "TEXT NOT NULL DEFAULT ''"},
+		{"quote_id", "TEXT NOT NULL DEFAULT ''"},
+		{"quote_from", "TEXT NOT NULL DEFAULT ''"},
+		{"quote_text", "TEXT NOT NULL DEFAULT ''"},
+		{"quote_kind", "TEXT NOT NULL DEFAULT ''"},
+		{"edited", "INTEGER NOT NULL DEFAULT 0"},
+		{"deleted", "INTEGER NOT NULL DEFAULT 0"},
+		{"ack", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if have[c.name] {
 			continue
@@ -202,6 +218,19 @@ func (s *MsgStore) NewestMessage(ctx context.Context, chat string) (id string, t
 	return id, ts, me, err == nil, err
 }
 
+// OldestMessage returns the oldest stored message of a chat, used as the
+// anchor of an on-demand request for older history.
+func (s *MsgStore) OldestMessage(ctx context.Context, chat string) (id string, ts int64, me bool, found bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err = s.db.QueryRowContext(ctx, `SELECT id, ts, me FROM messages WHERE chat = ?
+		ORDER BY ts ASC LIMIT 1`, chat).Scan(&id, &ts, &me)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, false, false, nil
+	}
+	return id, ts, me, err == nil, err
+}
+
 func (s *MsgStore) AddMessage(ctx context.Context, m Message, unread bool) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -212,10 +241,20 @@ func (s *MsgStore) AddMessage(ctx context.Context, m Message, unread bool) (bool
 	defer tx.Rollback()
 
 	raw, mediaJSON := mediaColumns(m)
+	var q Quote
+	if m.Quote != nil {
+		q = *m.Quote
+	}
+	ack := 0
+	if m.Me {
+		ack = max(ackLevel(m.Ack), ackSent)
+	}
 	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO messages
-		(chat, id, sender, name, text, kind, ts, me, unread, raw, media)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.Chat, m.ID, m.From, m.Name, m.Text, m.Kind, m.TS, m.Me, unread, raw, mediaJSON)
+		(chat, id, sender, name, text, kind, ts, me, unread, raw, media,
+		 quote_id, quote_from, quote_text, quote_kind, ack)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Chat, m.ID, m.From, m.Name, m.Text, m.Kind, m.TS, m.Me, unread, raw, mediaJSON,
+		q.ID, q.From, q.Text, q.Kind, ack)
 	if err != nil {
 		return false, err
 	}
@@ -354,23 +393,58 @@ func (s *MsgStore) Chats(ctx context.Context) ([]Chat, error) {
 	return chats, rows.Err()
 }
 
-// History returns up to limit messages of a chat, oldest first.
-func (s *MsgStore) History(ctx context.Context, jid string, limit int) ([]Message, error) {
+// messageColumns is the column list read by History and Lookup; scanMessages
+// reads rows in the same order.
+const messageColumns = `id, chat, sender, name, text, kind, ts, me, media, file,
+	quote_id, quote_from, quote_text, quote_kind, edited, deleted, ack`
+
+// History returns up to limit messages of a chat, oldest first. When before is
+// positive, only messages with ts < before are considered (pagination).
+func (s *MsgStore) History(ctx context.Context, jid string, limit int, before int64) ([]Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if before <= 0 {
+		before = math.MaxInt64
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT * FROM (
-		SELECT id, chat, sender, name, text, kind, ts, me, media, file FROM messages
-		WHERE chat = ? ORDER BY ts DESC LIMIT ?) ORDER BY ts`, jid, limit)
+		SELECT `+messageColumns+` FROM messages
+		WHERE chat = ? AND ts < ? ORDER BY ts DESC LIMIT ?) ORDER BY ts`, jid, before, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return s.scanMessages(ctx, rows, jid)
+}
+
+// Lookup returns one stored message, with its reactions.
+func (s *MsgStore) Lookup(ctx context.Context, chat, id string) (Message, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.QueryContext(ctx, `SELECT `+messageColumns+` FROM messages
+		WHERE chat = ? AND id = ?`, chat, id)
+	if err != nil {
+		return Message{}, false, err
+	}
+	msgs, err := s.scanMessages(ctx, rows, chat)
+	if err != nil || len(msgs) == 0 {
+		return Message{}, false, err
+	}
+	return msgs[0], true, nil
+}
+
+// scanMessages reads and closes rows, then attaches the aggregated reactions.
+// The caller holds s.mu.
+func (s *MsgStore) scanMessages(ctx context.Context, rows *sql.Rows, chat string) ([]Message, error) {
 	msgs := []Message{}
 	for rows.Next() {
 		var m Message
 		var media sql.NullString
 		var file string
-		if err := rows.Scan(&m.ID, &m.Chat, &m.From, &m.Name, &m.Text, &m.Kind, &m.TS, &m.Me, &media, &file); err != nil {
+		var q Quote
+		var edited, deleted bool
+		var ack int
+		if err := rows.Scan(&m.ID, &m.Chat, &m.From, &m.Name, &m.Text, &m.Kind, &m.TS, &m.Me, &media, &file,
+			&q.ID, &q.From, &q.Text, &q.Kind, &edited, &deleted, &ack); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		if media.Valid {
@@ -380,9 +454,199 @@ func (s *MsgStore) History(ctx context.Context, jid string, limit int) ([]Messag
 				m.Media = &mi
 			}
 		}
+		if q.ID != "" {
+			m.Quote = &q
+		}
+		m.Edited, m.Deleted = edited, deleted
+		if m.Me {
+			m.Ack = ackName(max(ack, ackSent))
+		}
 		msgs = append(msgs, m)
 	}
-	return msgs, rows.Err()
+	err := rows.Err()
+	rows.Close()
+	if err != nil || len(msgs) == 0 {
+		return msgs, err
+	}
+	// One query for the whole chat page: reactions of the messages read.
+	byID := make(map[string]*Message, len(msgs))
+	lo, hi := msgs[0].TS, msgs[0].TS
+	for i := range msgs {
+		byID[msgs[i].ID] = &msgs[i]
+		lo, hi = min(lo, msgs[i].TS), max(hi, msgs[i].TS)
+	}
+	rr, err := s.db.QueryContext(ctx, `SELECT r.msg_id, r.sender, r.emoji FROM reactions r
+		JOIN messages m ON m.chat = r.chat AND m.id = r.msg_id
+		WHERE r.chat = ? AND m.ts BETWEEN ? AND ? ORDER BY r.rowid`, chat, lo, hi)
+	if err != nil {
+		return nil, err
+	}
+	defer rr.Close()
+	for rr.Next() {
+		var id, sender, emoji string
+		if err := rr.Scan(&id, &sender, &emoji); err != nil {
+			return nil, err
+		}
+		m := byID[id]
+		if m == nil || m.Deleted {
+			continue
+		}
+		addReaction(m, sender, emoji)
+	}
+	return msgs, rr.Err()
+}
+
+// addReaction counts one reaction into the aggregate list of a message.
+func addReaction(m *Message, sender, emoji string) {
+	for i := range m.Reactions {
+		if m.Reactions[i].Emoji == emoji {
+			m.Reactions[i].Count++
+			m.Reactions[i].Me = m.Reactions[i].Me || sender == selfSender
+			return
+		}
+	}
+	m.Reactions = append(m.Reactions, Reaction{Emoji: emoji, Count: 1, Me: sender == selfSender})
+}
+
+// ApplyReaction sets (or, with an empty emoji, removes) the reaction of sender
+// on a stored message. Reactions older than the one already stored are
+// ignored, so history replays cannot undo newer changes. Reports whether the
+// aggregate changed; reactions on unknown messages are ignored.
+func (s *MsgStore) ApplyReaction(ctx context.Context, chat, id, sender, emoji string, ts int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE chat = ? AND id = ?`, chat, id).Scan(&n); err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return false, nil
+	}
+	var oldEmoji string
+	var oldTS int64
+	err = tx.QueryRowContext(ctx, `SELECT emoji, ts FROM reactions WHERE chat = ? AND msg_id = ? AND sender = ?`,
+		chat, id, sender).Scan(&oldEmoji, &oldTS)
+	exists := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	if exists && oldTS > ts {
+		return false, nil
+	}
+	changed := false
+	switch {
+	case emoji == "":
+		if exists {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM reactions WHERE chat = ? AND msg_id = ? AND sender = ?`,
+				chat, id, sender); err != nil {
+				return false, err
+			}
+			changed = true
+		}
+	case exists && oldEmoji == emoji:
+		if _, err := tx.ExecContext(ctx, `UPDATE reactions SET ts = ? WHERE chat = ? AND msg_id = ? AND sender = ?`,
+			ts, chat, id, sender); err != nil {
+			return false, err
+		}
+	default:
+		// Delete and insert (new rowid) so a changed reaction counts as the latest.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM reactions WHERE chat = ? AND msg_id = ? AND sender = ?`,
+			chat, id, sender); err != nil {
+			return false, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO reactions (chat, msg_id, sender, emoji, ts) VALUES (?, ?, ?, ?, ?)`,
+			chat, id, sender, emoji, ts); err != nil {
+			return false, err
+		}
+		changed = true
+	}
+	return changed, tx.Commit()
+}
+
+// ApplyEdit replaces the text of a stored, not deleted message. When it is the
+// newest message of the chat, the chat preview follows. Reports whether
+// anything changed.
+func (s *MsgStore) ApplyEdit(ctx context.Context, chat, id, text string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE messages SET text = ?, edited = 1
+		WHERE chat = ? AND id = ? AND deleted = 0 AND (edited = 0 OR text != ?)`, text, chat, id, text)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE chats SET last = ? WHERE jid = ? AND ? = (
+		SELECT id FROM messages WHERE chat = ? ORDER BY ts DESC LIMIT 1)`, text, chat, id, chat); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+// ApplyRevoke marks a stored message as deleted for everyone and drops its
+// content. An unread message stops counting as unread. Reports whether
+// anything changed.
+func (s *MsgStore) ApplyRevoke(ctx context.Context, chat, id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE messages SET deleted = 1, text = '', raw = NULL, media = NULL,
+		quote_id = '', quote_from = '', quote_text = '', quote_kind = '', unread = 0
+		WHERE chat = ? AND id = ? AND deleted = 0`, chat, id)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE chats SET last = '' WHERE jid = ? AND ? = (
+		SELECT id FROM messages WHERE chat = ? ORDER BY ts DESC LIMIT 1)`, chat, id, chat); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE chats SET unread = (
+		SELECT COUNT(*) FROM messages WHERE chat = ? AND unread = 1) WHERE jid = ?`, chat, chat); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+// SetAck raises the delivery state of my own messages. It never lowers it.
+// Returns the ids that changed.
+func (s *MsgStore) SetAck(ctx context.Context, chat string, ids []string, level int) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var changed []string
+	for _, id := range ids {
+		res, err := tx.ExecContext(ctx, `UPDATE messages SET ack = ?
+			WHERE chat = ? AND id = ? AND me = 1 AND MAX(ack, ?) < ?`, level, chat, id, ackSent, level)
+		if err != nil {
+			return nil, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			changed = append(changed, id)
+		}
+	}
+	return changed, tx.Commit()
 }
 
 // MediaRef is what is needed to download a media message again.
@@ -448,8 +712,17 @@ func (s *MsgStore) SetMediaFile(ctx context.Context, chat, id, path string) erro
 func (s *MsgStore) Clear(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM messages; DELETE FROM chats; DELETE FROM avatars;`)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM messages; DELETE FROM reactions; DELETE FROM chats; DELETE FROM avatars;`)
 	return err
+}
+
+// MessageName returns the push name stored with a message, or "".
+func (s *MsgStore) MessageName(ctx context.Context, chat, id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var name string
+	_ = s.db.QueryRowContext(ctx, `SELECT name FROM messages WHERE chat = ? AND id = ?`, chat, id).Scan(&name)
+	return name
 }
 
 // LastSenderName returns the push name of the newest incoming message of a chat.
