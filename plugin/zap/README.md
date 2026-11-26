@@ -5,6 +5,12 @@ read and send messages, voice notes, photos and documents. Login is by QR code, 
 
 ![Zap panel](screenshots/panel.png)
 
+| Group chat with a photo | Voice message playing | Document |
+| --- | --- | --- |
+| ![Group chat](screenshots/group.png) | ![Voice message](screenshots/audio.png) | ![Document](screenshots/document.png) |
+
+Screenshots taken in demo mode with the Portuguese interface; all names and messages are made up.
+
 ## Plugin
 
 | Field | Value |
@@ -58,6 +64,16 @@ folder and never connects to WhatsApp, so it is also the way to review the plugi
 | `media_cache_mb` | `int` | `500` | Size limit of the media cache in MB (50 to 10000). Restarts the helper. |
 | `daemon_path` | `string` | empty | Full path to `noctalia-zapd`. Empty means search `PATH` and `~/.local/bin`. Advanced. |
 | `demo` | `bool` | `false` | Run the helper in demo mode with fictional data. Restarts the helper. Advanced. |
+
+## IPC
+
+```sh
+noctalia msg plugin claudio-asj/zap:service all toggle
+noctalia msg plugin claudio-asj/zap:service all open <chat-jid>
+```
+
+`toggle` opens or closes the panel (at the size picked in settings). `open` opens the panel on a chat, the same
+as clicking a notification.
 
 ## Notes
 
