@@ -36,6 +36,7 @@ Estrutura, AGENTS.md (agnóstico de ferramenta), papéis de agentes, arquitetura
 - [x] Foto de perfil no avatar, buscada ao abrir a conversa (cache, no máximo 1×/dia)
 - [x] Indicador "Atualizando…" no cabeçalho enquanto busca foto e mídias antigas
 - [x] Nome colorido de quem escreveu nos grupos
+- **Pronto quando:** nomes e fotos certos no painel ✅ (testado em 2026-11-26)
 
 ## Fase 6: Conversa completa
 - [ ] Respostas citadas e responder a uma mensagem
