@@ -1,0 +1,96 @@
+{
+  "bar": {
+    "no_unread": "Nenhuma mensagem não lida",
+    "unread": {
+      "one": "{count} mensagem não lida",
+      "other": "{count} mensagens não lidas"
+    }
+  },
+  "status": {
+    "connecting": "Conectando…",
+    "qr": "Aguardando a leitura do QR code",
+    "connected": "Conectado",
+    "disconnected": "Desconectado",
+    "logged_out": "Não conectado",
+    "error": "Problema de conexão",
+    "missing": "noctalia-zapd não encontrado"
+  },
+  "detail": {
+    "reconnecting": "Reconectando…",
+    "keepalive_timeout": "Conexão lenta, aguardando…",
+    "paired": "Celular vinculado, carregando conversas…",
+    "qr_timeout": "O QR code expirou.",
+    "connect_failed": "Não deu para falar com o WhatsApp. Confira a internet.",
+    "pair_failed": "A vinculação falhou. Tente de novo.",
+    "logged_out_remotely": "Este aparelho foi removido pelo celular.",
+    "stream_replaced": "O WhatsApp foi aberto em outro lugar com esta sessão.",
+    "temporary_ban": "O WhatsApp bloqueou este número temporariamente.",
+    "client_outdated": "O WhatsApp recusou esta versão do cliente. Atualize o noctalia-zapd.",
+    "connect_failure": "O WhatsApp recusou a conexão.",
+    "daemon_stopped": "O noctalia-zapd parou. Reiniciando…",
+    "data_dir": "Não deu para abrir a pasta de dados do plugin.",
+    "start_failed": "Não deu para iniciar o noctalia-zapd.",
+    "socket": "Outra cópia do noctalia-zapd está rodando. Reiniciando…"
+  },
+  "kind": {
+    "image": "Foto",
+    "video": "Vídeo",
+    "audio": "Áudio",
+    "document": "Documento",
+    "sticker": "Figurinha",
+    "location": "Localização",
+    "contact": "Contato",
+    "poll": "Enquete"
+  },
+  "panel": {
+    "qr": {
+      "title": "Conectar este computador",
+      "step1": "1. Abra o WhatsApp no celular.",
+      "step2": "2. Vá em Configurações → Aparelhos conectados → Conectar um aparelho.",
+      "step3": "3. Aponte o celular para este código.",
+      "warning": "Este cliente não é oficial. Se puder, use um número reserva."
+    },
+    "login": {
+      "title": "WhatsApp não está conectado",
+      "button": "Mostrar QR code"
+    },
+    "retry": "Tentar de novo",
+    "missing": {
+      "title": "O noctalia-zapd não está instalado",
+      "body": "Instale o auxiliar ou informe o caminho dele nas configurações do plugin.",
+      "settings": "Abrir configurações"
+    },
+    "list": {
+      "title": "Conversas",
+      "search": "Buscar conversas",
+      "empty": "Nenhuma conversa ainda. Elas aparecem conforme o WhatsApp sincroniza.",
+      "no_match": "Nenhuma conversa corresponde à busca."
+    },
+    "chat": {
+      "pick": "Escolha uma conversa à esquerda.",
+      "soon": "Ler e enviar mensagens chega na próxima versão."
+    },
+    "logout": {
+      "button": "Sair",
+      "confirm": "Desconectar este computador do WhatsApp? As conversas locais serão apagadas.",
+      "cancel": "Cancelar"
+    },
+    "error": {
+      "command": "O comando falhou. Veja o log."
+    }
+  },
+  "settings": {
+    "hide_when_empty": {
+      "label": "Ocultar quando não houver novidade",
+      "description": "Esconde o ícone da barra quando não há mensagens não lidas."
+    },
+    "history_limit": {
+      "label": "Mensagens guardadas por conversa",
+      "description": "Quantas mensagens recentes guardar de cada conversa na sincronização."
+    },
+    "daemon_path": {
+      "label": "Caminho do noctalia-zapd",
+      "description": "Caminho completo do auxiliar. Deixe vazio para procurar no PATH e em ~/.local/bin."
+    }
+  }
+}

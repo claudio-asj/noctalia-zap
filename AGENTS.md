@@ -26,7 +26,7 @@ Projeto: cliente de WhatsApp como plugin do Noctalia Shell (niri/Wayland, Arch L
 1. Respostas ao usuário em **português (pt-BR)**. Código, identificadores, comentários, `plugin.toml`, `README.md`
    do plugin e `translations/en.json` em **inglês**.
 2. UI só com **papéis de cor do tema** (`primary`, `on_surface`...), nunca hex fixo. Siga `docs/design.md`.
-3. Nenhum texto literal na interface: tudo via `noctalia.tr("chave")` + `translations/en.json` (e `pt.json`).
+3. Nenhum texto literal na interface: tudo via `noctalia.tr("chave")` + `translations/en.json` (e `pt-BR.json`).
 4. Persistir só em `noctalia.pluginDataDir()`, nunca em `pluginDir()` (é sobrescrito em updates).
 5. **Nunca versionar a sessão do WhatsApp** (`*.db`, `data/`, `session/`) e nunca logar o conteúdo das mensagens.
 6. Processos externos sempre com **argv** (`runAsync({...})`), nunca string de shell montada com dados de mensagem.

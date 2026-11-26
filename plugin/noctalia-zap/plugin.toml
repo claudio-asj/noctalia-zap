@@ -1,0 +1,52 @@
+id = "claudio-asj/noctalia-zap"
+name = "Noctalia Zap"
+version = "0.1.0"
+plugin_api = 43
+author = "claudio-asj"
+license = "MIT"
+dependencies = ["noctalia-zapd"]
+tags = ["communication", "panel"]
+icon = "brand-whatsapp"
+description = "WhatsApp in the bar: unread count, chat list and QR login."
+
+# Runs noctalia-zapd and publishes its events to the shared state.
+[[service]]
+id = "service"
+entry = "service.luau"
+
+[[widget]]
+id = "bar"
+entry = "bar.luau"
+
+[[panel]]
+id = "panel"
+entry = "panel.luau"
+width = 900
+height = 640
+placement = "floating"
+position = "center"
+keyboard_focus = "on_demand"
+
+[[setting]]
+key = "hide_when_empty"
+type = "bool"
+label_key = "settings.hide_when_empty.label"
+description_key = "settings.hide_when_empty.description"
+default = false
+
+[[setting]]
+key = "history_limit"
+type = "int"
+label_key = "settings.history_limit.label"
+description_key = "settings.history_limit.description"
+default = 50
+min = 10
+max = 500
+
+[[setting]]
+key = "daemon_path"
+type = "string"
+label_key = "settings.daemon_path.label"
+description_key = "settings.daemon_path.description"
+default = ""
+advanced = true

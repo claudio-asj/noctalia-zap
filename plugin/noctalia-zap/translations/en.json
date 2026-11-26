@@ -1,0 +1,96 @@
+{
+  "bar": {
+    "no_unread": "No unread messages",
+    "unread": {
+      "one": "{count} unread message",
+      "other": "{count} unread messages"
+    }
+  },
+  "status": {
+    "connecting": "Connecting…",
+    "qr": "Waiting for the QR code scan",
+    "connected": "Connected",
+    "disconnected": "Disconnected",
+    "logged_out": "Not logged in",
+    "error": "Connection problem",
+    "missing": "noctalia-zapd not found"
+  },
+  "detail": {
+    "reconnecting": "Reconnecting…",
+    "keepalive_timeout": "Connection is slow, waiting…",
+    "paired": "Phone linked, loading chats…",
+    "qr_timeout": "The QR code expired.",
+    "connect_failed": "Could not reach WhatsApp. Check your connection.",
+    "pair_failed": "Linking failed. Try again.",
+    "logged_out_remotely": "This device was removed on the phone.",
+    "stream_replaced": "WhatsApp was opened somewhere else with this session.",
+    "temporary_ban": "WhatsApp temporarily blocked this number.",
+    "client_outdated": "WhatsApp rejected this client version. Update noctalia-zapd.",
+    "connect_failure": "WhatsApp refused the connection.",
+    "daemon_stopped": "noctalia-zapd stopped. Restarting…",
+    "data_dir": "Could not open the plugin data folder.",
+    "start_failed": "Could not start noctalia-zapd.",
+    "socket": "Another copy of noctalia-zapd is running. Restarting…"
+  },
+  "kind": {
+    "image": "Photo",
+    "video": "Video",
+    "audio": "Audio",
+    "document": "Document",
+    "sticker": "Sticker",
+    "location": "Location",
+    "contact": "Contact",
+    "poll": "Poll"
+  },
+  "panel": {
+    "qr": {
+      "title": "Link this computer",
+      "step1": "1. Open WhatsApp on your phone.",
+      "step2": "2. Go to Settings → Linked devices → Link a device.",
+      "step3": "3. Point the phone at this code.",
+      "warning": "This is an unofficial client. Use a spare number if you can."
+    },
+    "login": {
+      "title": "WhatsApp is not linked",
+      "button": "Show QR code"
+    },
+    "retry": "Try again",
+    "missing": {
+      "title": "noctalia-zapd is not installed",
+      "body": "Install the helper or set its path in the plugin settings.",
+      "settings": "Open settings"
+    },
+    "list": {
+      "title": "Chats",
+      "search": "Search chats",
+      "empty": "No chats yet. They show up as WhatsApp syncs.",
+      "no_match": "No chat matches the search."
+    },
+    "chat": {
+      "pick": "Pick a chat on the left.",
+      "soon": "Reading and sending messages comes in the next version."
+    },
+    "logout": {
+      "button": "Log out",
+      "confirm": "Unlink this computer from WhatsApp? Local chats will be deleted.",
+      "cancel": "Cancel"
+    },
+    "error": {
+      "command": "The command failed. Check the log."
+    }
+  },
+  "settings": {
+    "hide_when_empty": {
+      "label": "Hide when there is nothing new",
+      "description": "Hide the bar icon when there are no unread messages."
+    },
+    "history_limit": {
+      "label": "Messages kept per chat",
+      "description": "How many recent messages to keep for each chat when syncing."
+    },
+    "daemon_path": {
+      "label": "noctalia-zapd path",
+      "description": "Full path to the helper. Leave empty to look in PATH and ~/.local/bin."
+    }
+  }
+}

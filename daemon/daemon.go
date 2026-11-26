@@ -59,6 +59,9 @@ type Daemon struct {
 	offline     bool // between OfflineSyncPreview and OfflineSyncCompleted
 	chatsTimer  *time.Timer
 	nameLookups map[string]bool
+	// qrFile is the current QR image. Each code gets a new file name so image
+	// caches keyed by path (the plugin's ui.image) always show the new code.
+	qrFile string
 }
 
 func NewDaemon(cfg Config, container *sqlstore.Container, msgs *MsgStore, emit *Emitter, quit context.CancelFunc) *Daemon {
@@ -72,7 +75,16 @@ func NewDaemon(cfg Config, container *sqlstore.Container, msgs *MsgStore, emit *
 	}
 }
 
-func (d *Daemon) qrPath() string { return filepath.Join(d.cfg.DataDir, "qr.png") }
+// removeQR deletes the current QR image, if any.
+func (d *Daemon) removeQR() {
+	d.mu.Lock()
+	path := d.qrFile
+	d.qrFile = ""
+	d.mu.Unlock()
+	if path != "" {
+		_ = os.Remove(path)
+	}
+}
 
 func (d *Daemon) setStatus(state, detail string) {
 	d.statusMu.Lock()
@@ -133,7 +145,7 @@ func (d *Daemon) Stop() {
 	if c := d.getClient(); c != nil {
 		c.Disconnect()
 	}
-	_ = os.Remove(d.qrPath())
+	d.removeQR()
 }
 
 func (d *Daemon) newClient(device *store.Device) {
@@ -194,7 +206,7 @@ func (d *Daemon) pairLoop(c *whatsmeow.Client, ch <-chan whatsmeow.QRChannelItem
 			d.pairing = false
 		}
 		d.mu.Unlock()
-		_ = os.Remove(d.qrPath())
+		d.removeQR()
 	}()
 	for item := range ch {
 		if d.getClient() != c {
@@ -202,13 +214,14 @@ func (d *Daemon) pairLoop(c *whatsmeow.Client, ch <-chan whatsmeow.QRChannelItem
 		}
 		switch item.Event {
 		case whatsmeow.QRChannelEventCode:
-			if err := d.writeQR(item.Code); err != nil {
+			path, err := d.writeQR(item.Code)
+			if err != nil {
 				log.Printf("qr: %v", err)
 				d.setStatus(StateError, "qr_write_failed")
 				continue
 			}
 			d.setStatus(StateQR, "")
-			d.emit.Emit(QREvent{Type: "qr", PNG: d.qrPath()})
+			d.emit.Emit(QREvent{Type: "qr", PNG: path})
 		case whatsmeow.QRChannelSuccess.Event:
 			d.setStatus(StateConnecting, "paired")
 			time.AfterFunc(pairWatchdog, func() {
@@ -233,24 +246,30 @@ func (d *Daemon) pairLoop(c *whatsmeow.Client, ch <-chan whatsmeow.QRChannelItem
 	}
 }
 
-func (d *Daemon) writeQR(code string) error {
+func (d *Daemon) writeQR(code string) (string, error) {
 	png, err := qrcode.Encode(code, qrcode.Medium, 512)
 	if err != nil {
-		return err
+		return "", err
 	}
-	tmp := d.qrPath() + ".tmp"
+	path := filepath.Join(d.cfg.DataDir, fmt.Sprintf("qr-%d.png", time.Now().UnixNano()))
+	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, png, 0o600); err != nil {
-		return err
+		return "", err
 	}
-	if err := os.Rename(tmp, d.qrPath()); err != nil {
-		return err
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
 	}
+	d.removeQR()
+	d.mu.Lock()
+	d.qrFile = path
+	d.mu.Unlock()
 	if d.cfg.QRTerminal {
 		if q, err := qrcode.New(code, qrcode.Low); err == nil {
 			fmt.Fprintln(os.Stderr, q.ToSmallString(false))
 		}
 	}
-	return nil
+	return path, nil
 }
 
 func (d *Daemon) setOffline(v bool) {

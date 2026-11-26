@@ -13,7 +13,7 @@ plugin/noctalia-zap/
   panel.luau             painel
   lib/                   módulos (style.luau, state.luau, protocol.luau, format.luau)
   translations/en.json   obrigatório (settings e textos da UI)
-  translations/pt.json   português
+  translations/pt-BR.json português
   README.md              em inglês, vira a página do plugin
   thumbnail.webp         imagem do card na loja
   screenshots/           imagens usadas no README (caminhos relativos)

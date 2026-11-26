@@ -9,6 +9,9 @@ workflow), lidas em 2026-11-25, e plugins da comunidade. Noctalia instalado: 5.6
   (`notification_history.enc`). Se precisar, o contorno testado é `dbus-monitor --session
   "interface='org.freedesktop.Notifications',member='Notify'"` via `runStream`.
 - `runStream` não tem stdin nem handle para parar o processo (ele é encerrado no reload ou no stop do plugin).
+  Também não avisa quando o processo sai e **só aceita string de shell** (`runAsync` aceita argv). Use `exec` e
+  aspas simples escapadas em cada caminho (padrão do `androidconnect`), e um watchdog no `update()` para saber se
+  o processo morreu.
 - Não há API para focar janelas. Use `niri msg action ...` via `runAsync`.
 - Painéis não renderizam web. `ui.image` só aceita arquivo local.
 
@@ -70,6 +73,19 @@ pressed, repeated)`.
 
 Cores: sempre por papel (`primary`, `on_surface`, `on_surface_variant`, `outline_variant`, `error`,
 `surface_container`...).
+
+## Confirmado nos tipos (`noctalia.d.luau` do repositório oficial)
+
+- `noctalia.formatTime(padrão, ts?)` usa strftime (`"%H:%M"`); sem `ts`, usa a hora atual.
+- `noctalia.trp(chave, n)` com plurais `{"one": "...", "other": "..."}` e `{count}` no texto.
+- Traduções em português: `translations/pt-BR.json` (não `pt.json`).
+- `ui.column/row` não têm `maxWidth` (só `ui.label`). Têm `fill`, `radius`, `padding*`, `onClick`, `onHover`,
+  `tooltip`.
+- Callbacks de UI podem ser closures (API ≥ 9); os argumentos chegam como string (`onHover` recebe `"true"`/`"false"`).
+- `noctalia.openSettings()` abre as configurações do plugin (API 15).
+- Clique do meio no widget é `settings-open-widget` por padrão; `onMiddleClick` só roda com `middle = "none"`.
+- Settings `int` aceitam `min`/`max`; `advanced = true` esconde a opção na seção avançada.
+- `ui.image` pode manter cache pelo caminho: o daemon grava cada QR com um nome novo (`qr-<n>.png`).
 
 ## Desenvolvimento local
 
