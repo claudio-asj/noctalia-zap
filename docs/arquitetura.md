@@ -300,6 +300,27 @@ que roda o daemon com `-data <pluginDataDir>/demo` (a sessão real fica intacta)
   `paste`, `record` e `send --media` respondem erro `demo`.
 - Nada de rede, nada de whatsmeow nessa rota (garantido por teste: o modo demo não referencia o container).
 
+### Marcar como não lida
+
+- Conversa ganha `"marked_unread": true` (omitempty) no `chats`. Coluna `chats.marked_unread` (migração por
+  `ALTER TABLE`).
+- Do celular: `events.MarkChatAsRead` com `read=false` liga a marca; com `read=true` desliga a marca e zera as não
+  lidas (como já fazia). Ambos reenviam `chats`.
+- `{"cmd":"unread","chat":"jid"}` (ctl `unread <jid>`): monta `appstate.BuildMarkChatAsRead(chat, false, ts, key)`
+  com a mensagem mais nova guardada da conversa (`key`: `RemoteJID` = chat, `FromMe`, `ID` e, em grupo,
+  `Participant` = remetente) e envia com `SendAppState`. Liga a marca e reenvia `chats`. Erros: `not connected`,
+  `not_found` (conversa sem mensagens).
+- `read` também desliga a marca. Se a conversa estava marcada, manda ao WhatsApp
+  `BuildMarkChatAsRead(chat, true, ...)` para o celular tirar a marca (além dos recibos normais das não lidas).
+  Sem conexão, desliga a marca só localmente e responde ok.
+- Modo demonstração: `unread` liga a marca localmente; `read` desliga.
+- Plugin:
+  - Na lista, conversa marcada e sem não lidas mostra um ponto `primary` no lugar do número.
+  - O contador da barra conta 1 para cada conversa marcada sem não lidas, exceto arquivadas.
+  - O cabeçalho da conversa ganha um botão só de ícone (`mail`, tooltip "Marcar como não lida") que chama `unread`
+    e fecha a conversa, como no WhatsApp; se ela continuasse aberta, seria marcada como lida de novo.
+  - Abrir uma conversa marcada chama `read`, como quando há não lidas.
+
 ## Plugin (Luau)
 
 | Entrada | Arquivo | Papel |
