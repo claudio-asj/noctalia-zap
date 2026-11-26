@@ -18,6 +18,7 @@ Estrutura, AGENTS.md (agnóstico de ferramenta), papéis de agentes, arquitetura
 ## Fase 3: Conversa
 - [x] Abrir conversa, histórico, campo de envio
 - [x] Marcar como lida; notificação com botão "Responder"
+- **Pronto quando:** abrir conversa, enviar e receber notificação pelo painel ✅ (testado em 2026-11-26)
 
 ## Depois
 Mídia (imagens, áudio), grupos, figurinhas, busca, múltiplas contas.
