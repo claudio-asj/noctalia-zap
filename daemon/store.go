@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS messages (
 	PRIMARY KEY (chat, id)
 );
 CREATE INDEX IF NOT EXISTS messages_chat_ts ON messages (chat, ts);
+CREATE TABLE IF NOT EXISTS avatars (
+	jid     TEXT PRIMARY KEY,
+	pic_id  TEXT NOT NULL DEFAULT '',
+	checked INTEGER NOT NULL DEFAULT 0
+);
 `
 
 func OpenMsgStore(path string) (*MsgStore, error) {
@@ -90,6 +95,11 @@ func migrate(db *sql.DB) error {
 		if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
 			return err
 		}
+	}
+	// Early versions stored the "+phone" fallback as the name, which then
+	// blocked real names from replacing it. The fallback is computed on read now.
+	if _, err := db.Exec(`UPDATE chats SET name = '' WHERE name LIKE '+%' AND jid LIKE '%@s.whatsapp.net'`); err != nil {
+		return err
 	}
 	return nil
 }
@@ -326,8 +336,9 @@ func (s *MsgStore) TakeUnread(ctx context.Context, jid string) ([]UnreadRef, err
 func (s *MsgStore) Chats(ctx context.Context) ([]Chat, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Chats without any message (history sync sends many) stay hidden, as in WhatsApp.
 	rows, err := s.db.QueryContext(ctx, `SELECT jid, name, unread, last, last_kind, ts
-		FROM chats ORDER BY ts DESC`)
+		FROM chats WHERE ts > 0 ORDER BY ts DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -337,9 +348,6 @@ func (s *MsgStore) Chats(ctx context.Context) ([]Chat, error) {
 		var c Chat
 		if err := rows.Scan(&c.JID, &c.Name, &c.Unread, &c.Last, &c.LastKind, &c.TS); err != nil {
 			return nil, err
-		}
-		if c.Name == "" {
-			c.Name = fallbackName(c.JID)
 		}
 		chats = append(chats, c)
 	}
@@ -440,7 +448,34 @@ func (s *MsgStore) SetMediaFile(ctx context.Context, chat, id, path string) erro
 func (s *MsgStore) Clear(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM messages; DELETE FROM chats;`)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM messages; DELETE FROM chats; DELETE FROM avatars;`)
+	return err
+}
+
+// LastSenderName returns the push name of the newest incoming message of a chat.
+func (s *MsgStore) LastSenderName(ctx context.Context, chat string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var name string
+	_ = s.db.QueryRowContext(ctx, `SELECT name FROM messages WHERE chat = ? AND me = 0 AND name != ''
+		ORDER BY ts DESC LIMIT 1`, chat).Scan(&name)
+	return name
+}
+
+// AvatarState returns the stored picture id and last check time (unix seconds).
+func (s *MsgStore) AvatarState(ctx context.Context, jid string) (picID string, checked int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = s.db.QueryRowContext(ctx, `SELECT pic_id, checked FROM avatars WHERE jid = ?`, jid).Scan(&picID, &checked)
+	return picID, checked
+}
+
+// SetAvatar records the picture id of a chat (empty: none) and when it was checked.
+func (s *MsgStore) SetAvatar(ctx context.Context, jid, picID string, checked int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO avatars (jid, pic_id, checked) VALUES (?, ?, ?)
+		ON CONFLICT (jid) DO UPDATE SET pic_id = excluded.pic_id, checked = excluded.checked`, jid, picID, checked)
 	return err
 }
 

@@ -49,6 +49,11 @@ local mediaBusy = {} -- id -> true while downloading
 local mediaError = {} -- id -> translation key of the last error
 local playback = noctalia.state.get(common.KEY_PLAYBACK) or {}
 
+-- "Updating" indicator of the open chat: picture refresh and history resend.
+local avatarPending = false
+local backfillPending = false
+local backfillToken = 0
+
 local render -- forward declaration
 
 -- Runs a daemon command. Only fixed words and a JID go into argv.
@@ -177,8 +182,32 @@ local function selectChat(jid)
   -- Older media may lack download data: ask the phone to resend this chat's
   -- history. The daemon skips chats that need nothing; the answer comes back
   -- as a "backfill" event and the chat reloads.
+  avatarPending, backfillPending = false, false
   if daemon ~= nil then
-    noctalia.runAsync({ daemon, "ctl", "backfill", jid }, function(_r) end, 30000)
+    backfillToken += 1
+    local token = backfillToken
+    noctalia.runAsync({ daemon, "ctl", "backfill", jid }, function(r)
+      local resp = noctalia.json.decode(r.stdout or "")
+      if selected == jid and type(resp) == "table" and type(resp.data) == "table" and resp.data.requested then
+        backfillPending = true
+        render()
+        -- The phone may never answer (offline): give up on the indicator after a minute.
+        noctalia.runAsync({ "sleep", "60" }, function(_r)
+          if backfillToken == token and backfillPending then
+            backfillPending = false
+            render()
+          end
+        end, 65000)
+      end
+    end, 30000)
+    -- Profile picture, refreshed at most once a day per chat.
+    avatarPending = true
+    noctalia.runAsync({ daemon, "ctl", "avatar", jid }, function(_r)
+      if selected == jid then
+        avatarPending = false
+        render()
+      end
+    end, 30000)
   end
   -- Receipts only once the user can see the chat; onOpen covers the rest.
   local c = chatByJid(jid)
@@ -407,8 +436,11 @@ local function qrScreen()
   return ui.row({ flexGrow = 1, align = "center", justify = "center", gap = 32 }, { code, steps })
 end
 
-local function avatar(name: string)
+local function avatar(name: string, picture: string?)
   local size = style.avatar
+  if picture ~= nil then
+    return ui.image({ key = picture, path = picture, width = size, height = size, radius = size / 2, fit = "cover" })
+  end
   return ui.column({
     width = size,
     height = size,
@@ -457,7 +489,7 @@ local function chatRow(c)
       selectChat(c.jid)
     end,
   }, {
-    avatar(c.name),
+    avatar(c.name, c.avatar),
     ui.column({ flexGrow = 1, gap = style.gap.xs }, {
       ui.row({ gap = style.gap.sm, align = "center" }, {
         ui.label({
@@ -747,7 +779,7 @@ local function stickerBubble(m, key: string, showSender: boolean)
       text = m.name,
       fontSize = style.font.caption,
       fontWeight = "medium",
-      color = "secondary",
+      color = common.senderColor(m.from),
       maxLines = 1,
     }))
   end
@@ -805,7 +837,7 @@ local function bubble(m, index: number, showSender: boolean)
       text = m.name,
       fontSize = style.font.caption,
       fontWeight = "medium",
-      color = "secondary",
+      color = common.senderColor(m.from),
       maxLines = 1,
     }))
   end
@@ -938,10 +970,23 @@ local function conversationPane()
   end
   local c = chatByJid(selected)
   local name = if c then c.name else selected
+  local titleParts = {
+    ui.label({ text = name, fontSize = style.font.title, fontWeight = "bold", color = "on_surface", maxLines = 1 }),
+  }
+  if avatarPending or backfillPending then
+    table.insert(titleParts, ui.row({ gap = style.gap.xs, align = "center" }, {
+      ui.glyph({ name = "refresh", size = 12, color = "on_surface_variant" }),
+      ui.label({
+        text = noctalia.tr(if backfillPending then "panel.chat.updating_media" else "panel.chat.updating"),
+        fontSize = style.font.caption,
+        color = "on_surface_variant",
+      }),
+    }))
+  end
   return ui.column({ flexGrow = 1, gap = style.gap.md }, {
     ui.row({ gap = style.gap.md, align = "center" }, {
-      avatar(name),
-      ui.label({ text = name, fontSize = style.font.title, fontWeight = "bold", color = "on_surface", maxLines = 1, flexGrow = 1 }),
+      avatar(name, if c then c.avatar else nil),
+      ui.column({ gap = 2, flexGrow = 1 }, titleParts),
       ui.button({
         glyph = "x",
         variant = "ghost",
@@ -1046,8 +1091,12 @@ noctalia.state.watch(common.KEY_DAEMON, function(value)
 end)
 noctalia.state.watch(common.KEY_MESSAGES, onMessages)
 noctalia.state.watch(common.KEY_BACKFILL, function(value)
-  if isOpen and type(value) == "table" and value.chat == selected and not loadingHistory then
-    loadHistory(selected, HISTORY_LIMIT)
+  if type(value) == "table" and value.chat == selected then
+    backfillPending = false
+    if isOpen and not loadingHistory then
+      loadHistory(selected, HISTORY_LIMIT)
+    end
+    render()
   end
 end)
 noctalia.state.watch(common.KEY_PLAYBACK, function(value)

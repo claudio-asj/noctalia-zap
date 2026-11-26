@@ -88,8 +88,9 @@ local function onChats(items)
       table.insert(chats, {
         archived = archived,
         pinned = c.pinned == true,
+        avatar = if type(c.avatar) == "string" then c.avatar else nil,
         jid = c.jid,
-        name = c.name or "",
+        name = if type(c.name) == "string" and c.name ~= "" then c.name else noctalia.tr("panel.chat.unknown"),
         unread = n,
         last = c.last or "",
         lastKind = c.last_kind or "",

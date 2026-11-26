@@ -31,9 +31,11 @@ Estrutura, AGENTS.md (agnóstico de ferramenta), papéis de agentes, arquitetura
 - **Pronto quando:** ver miniatura, abrir foto em tamanho real e ouvir um áudio pelo painel ✅ (testado em 2026-11-26)
 
 ## Fase 5: Contatos e fotos
-- [ ] Nomes para as conversas que só mostram telefone (push name, sincronização de contatos)
-- [ ] Foto de perfil no avatar (cache)
-- [ ] Nome colorido de quem escreveu nos grupos
+- [x] Nomes para as conversas que só mostravam telefone (contato, nome de perfil, última mensagem)
+- [x] Conversas vazias do history sync escondidas
+- [x] Foto de perfil no avatar, buscada ao abrir a conversa (cache, no máximo 1×/dia)
+- [x] Indicador "Atualizando…" no cabeçalho enquanto busca foto e mídias antigas
+- [x] Nome colorido de quem escreveu nos grupos
 
 ## Fase 6: Conversa completa
 - [ ] Respostas citadas e responder a uma mensagem

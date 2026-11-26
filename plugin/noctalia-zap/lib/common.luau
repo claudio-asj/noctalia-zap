@@ -101,6 +101,17 @@ function M.fileSize(bytes: number): string
   return noctalia.tr("size.kb", { n = tostring(math.max(1, math.floor(bytes / 1024))) })
 end
 
+-- Theme roles used to tell group senders apart. Same sender, same color.
+local SENDER_COLORS = { "primary", "secondary", "tertiary" }
+
+function M.senderColor(jid: string?): string
+  local h = 0
+  for i = 1, #(jid or "") do
+    h = (h * 31 + string.byte(jid, i)) % 1000003
+  end
+  return SENDER_COLORS[(h % #SENDER_COLORS) + 1]
+end
+
 -- Badge text, capped so it stays small.
 function M.badgeText(count: number): string
   if count > 99 then

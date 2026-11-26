@@ -81,7 +81,10 @@
       "offline": "Sem conexão",
       "send": "Enviar (Enter)",
       "send_error": "A mensagem não foi enviada. Tente de novo.",
-      "close": "Fechar conversa"
+      "close": "Fechar conversa",
+      "updating": "Atualizando…",
+      "updating_media": "Buscando mídias antigas no celular…",
+      "unknown": "Desconhecido"
     },
     "logout": {
       "button": "Sair",

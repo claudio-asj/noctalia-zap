@@ -45,7 +45,7 @@ Eventos (daemon → plugin, stdout):
 ```json
 {"type":"status","state":"connecting|qr|connected|logged_out|error","detail":"..."}
 {"type":"qr","png":"/abs/path/qr.png"}
-{"type":"chats","page":0,"pages":3,"items":[{"jid":"...","name":"...","unread":2,"last":"...","last_kind":"text","ts":1700000000,"archived":false,"pinned":false}]}
+{"type":"chats","page":0,"pages":3,"items":[{"jid":"...","name":"...","unread":2,"last":"...","last_kind":"text","ts":1700000000,"archived":false,"pinned":false,"avatar":"/abs/media/avatars/<h>.jpg"}]}
 {"type":"message","id":"...","chat":"jid","from":"jid","name":"...","text":"...","kind":"text","ts":1700000000,"me":false,"backlog":false,"truncated":false,"muted":false}
 ```
 
@@ -54,6 +54,14 @@ Eventos (daemon → plugin, stdout):
   em páginas: a página 0 recomeça a lista e a última (`page == pages-1`) fecha. `last` vem cortado em 200 bytes.
   Fixadas primeiro; `archived`/`pinned` vêm do estado que o whatsmeow guarda (muda no celular, a lista é reenviada).
   Arquivadas não contam no contador da barra nem notificam (como "Manter conversas arquivadas" do WhatsApp).
+- Conversas sem nenhuma mensagem (o history sync manda muitas) ficam fora da lista, como no WhatsApp.
+- `name` de conversa individual sem nome gravado é resolvido na hora: contato salvo → nome de perfil do contato →
+  nome de perfil da última mensagem recebida → `+telefone`. `@lid` sem nada conhecido vem vazio (o plugin mostra
+  "Desconhecido").
+- `avatar`: miniatura da foto de perfil (96 px), só se já foi baixada. `{"cmd":"avatar","chat":"jid"}` busca a foto
+  se ela não foi conferida nas últimas 24 h (o painel chama ao abrir a conversa; nada roda em massa em segundo
+  plano). Foto oculta ou ausente fica registrada como "sem foto" por 24 h. O evento `Picture` do whatsmeow zera o
+  prazo daquela conversa. Arquivos em `media/avatars/`, apagados no logout.
 - `message.text` vem cortado em 2000 bytes (`truncated: true`); o texto inteiro sai pelo `history`.
   `muted`: conversa silenciada no celular, não notificar.
 - `kind`: `text`, `image`, `video`, `audio`, `document`, `sticker`, `location`, `contact`, `poll`. Para tipos que

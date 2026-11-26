@@ -28,6 +28,7 @@ type Chat struct {
 	LastKind string `json:"last_kind"`
 	TS       int64  `json:"ts"`
 	Archived bool   `json:"archived,omitempty"`
+	Avatar   string `json:"avatar,omitempty"` // profile picture preview, absolute path
 	Pinned   bool   `json:"pinned,omitempty"`
 }
 

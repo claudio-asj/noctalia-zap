@@ -81,7 +81,10 @@
       "offline": "Not connected",
       "send": "Send (Enter)",
       "send_error": "The message was not sent. Try again.",
-      "close": "Close chat"
+      "close": "Close chat",
+      "updating": "Updating…",
+      "updating_media": "Fetching older media from the phone…",
+      "unknown": "Unknown"
     },
     "logout": {
       "button": "Log out",

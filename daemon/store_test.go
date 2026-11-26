@@ -219,3 +219,34 @@ func TestFillMediaAndBackfill(t *testing.T) {
 		t.Fatal("empty chat has no newest")
 	}
 }
+
+func TestNamesAndAvatarsStore(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	chat := "5511@s.whatsapp.net"
+	if _, err := s.db.Exec(`INSERT INTO chats (jid, name) VALUES (?, '+5511'), ('empty@s.whatsapp.net', '')`, chat); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(s.db); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.ChatName(ctx, chat); n != "" {
+		t.Fatalf("legacy +phone name must be cleared, got %q", n)
+	}
+	if _, err := s.AddMessage(ctx, Message{ID: "1", Chat: chat, Name: "Ana", Kind: KindText, TS: 5}, false); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.LastSenderName(ctx, chat); n != "Ana" {
+		t.Fatalf("last sender = %q", n)
+	}
+	chats, _ := s.Chats(ctx)
+	if len(chats) != 1 || chats[0].JID != chat {
+		t.Fatalf("empty chats must be hidden: %+v", chats)
+	}
+	if err := s.SetAvatar(ctx, chat, "pic1", 100); err != nil {
+		t.Fatal(err)
+	}
+	if id, at := s.AvatarState(ctx, chat); id != "pic1" || at != 100 {
+		t.Fatalf("avatar = %q %d", id, at)
+	}
+}

@@ -297,6 +297,9 @@ func (d *Daemon) handleEvent(raw any) {
 	case *events.Connected:
 		d.setStatus(StateConnected, "")
 		d.scheduleChats()
+	case *events.Picture:
+		// Changed or removed: checked again the next time the chat is opened.
+		_ = d.store.SetAvatar(ctx, d.chatKey(ctx, evt.JID).String(), "", 0)
 	case *events.Disconnected:
 		// Auto reconnect is on for logged-in sessions; report it so the UI can show it.
 		// Events are dispatched in goroutines, so a late Disconnected may arrive after
@@ -680,6 +683,12 @@ func (d *Daemon) chatList(ctx context.Context) ([]Chat, error) {
 		}
 		s := d.chatSettings(ctx, jid)
 		chats[i].Archived, chats[i].Pinned = s.Archived, s.Pinned
+		if chats[i].Name == "" {
+			chats[i].Name = d.resolveName(ctx, jid)
+		}
+		if p := avatarPath(d.cfg.DataDir, chats[i].JID); fileExists(p) {
+			chats[i].Avatar = p
+		}
 	}
 	// Stable: keeps the most-recent-first order inside each group.
 	sort.SliceStable(chats, func(a, b int) bool {
@@ -717,6 +726,8 @@ func (d *Daemon) Handle(ctx context.Context, req Request) Response {
 		return d.cmdHistory(ctx, req)
 	case "backfill":
 		return d.cmdBackfill(ctx, req)
+	case "avatar":
+		return d.cmdAvatar(ctx, req)
 	case "send":
 		return d.cmdSend(ctx, req)
 	case "read":
@@ -964,4 +975,20 @@ func (d *Daemon) cmdBackfill(ctx context.Context, req Request) Response {
 	d.backfillAt[key] = time.Now()
 	d.mu.Unlock()
 	return Response{OK: true, Data: map[string]any{"requested": true}}
+}
+
+// resolveName finds a name for a chat stored without one: saved contact or
+// its push name, then the push name of the last incoming message, then the
+// phone number.
+func (d *Daemon) resolveName(ctx context.Context, jid types.JID) string {
+	if jid.Server == types.GroupServer {
+		return ""
+	}
+	if n := d.contactName(ctx, jid); n != "" {
+		return n
+	}
+	if n := d.store.LastSenderName(ctx, jid.String()); n != "" {
+		return n
+	}
+	return fallbackName(jid.String())
 }
