@@ -44,6 +44,11 @@ local sending = false
 local sendError = false
 local scrollRev = 0
 
+-- Media: per message id.
+local mediaBusy = {} -- id -> true while downloading
+local mediaError = {} -- id -> translation key of the last error
+local playback = noctalia.state.get(common.KEY_PLAYBACK) or {}
+
 local render -- forward declaration
 
 -- Runs a daemon command. Only fixed words and a JID go into argv.
@@ -141,6 +146,7 @@ local function loadHistory(jid, limit)
         name = m.name or "",
         text = m.text or "",
         kind = m.kind or "text",
+        media = common.copyMedia(m.media),
         ts = tonumber(m.ts) or 0,
         me = m.me == true,
       })
@@ -202,6 +208,71 @@ local function send()
       end
     else
       sendError = true
+    end
+    render()
+  end, 60000)
+  render()
+end
+
+-- Error keys the daemon may answer for media commands.
+local MEDIA_ERRORS = {
+  media_unavailable = "panel.media.unavailable",
+  not_stored = "panel.media.not_stored",
+  ["not connected"] = "panel.media.offline",
+  no_player = "panel.media.no_player",
+}
+
+local function mediaFailed(id, stdout)
+  local resp = noctalia.json.decode(stdout or "")
+  local err = if type(resp) == "table" then resp.error else nil
+  mediaError[id] = MEDIA_ERRORS[err or ""] or "panel.media.failed"
+end
+
+-- Downloads (if needed) and opens a photo, video, document or sticker.
+local function openMedia(m)
+  if daemon == nil or mediaBusy[m.id] then
+    return
+  end
+  mediaBusy[m.id] = true
+  mediaError[m.id] = nil
+  local jid = selected
+  noctalia.runAsync({ daemon, "ctl", "media", jid, m.id }, function(r)
+    mediaBusy[m.id] = nil
+    local resp = noctalia.json.decode(r.stdout or "")
+    if r.exitCode == 0 and type(resp) == "table" and type(resp.data) == "table" and type(resp.data.path) == "string" then
+      if m.media then
+        m.media.file = resp.data.path
+      end
+      noctalia.openPath(resp.data.path)
+    else
+      mediaFailed(m.id, r.stdout)
+    end
+    render()
+  end, 60000)
+  render()
+end
+
+local function isPlaying(m): boolean
+  return playback.playing == true and playback.id == m.id and playback.chat == selected
+end
+
+local function toggleAudio(m)
+  if daemon == nil then
+    return
+  end
+  if isPlaying(m) then
+    noctalia.runAsync({ daemon, "ctl", "stop" }, function(_r) end, 10000)
+    return
+  end
+  if mediaBusy[m.id] then
+    return
+  end
+  mediaBusy[m.id] = true
+  mediaError[m.id] = nil
+  noctalia.runAsync({ daemon, "ctl", "play", selected, m.id }, function(r)
+    mediaBusy[m.id] = nil
+    if r.exitCode ~= 0 then
+      mediaFailed(m.id, r.stdout)
     end
     render()
   end, 60000)
@@ -547,6 +618,119 @@ local function dayLabel(ts: number): string
   return noctalia.formatTime("%x", ts) -- the locale's date format
 end
 
+-- Thumbnail box size: keeps the aspect ratio inside thumbMax x thumbMax.
+local function thumbSize(media): (number, number)
+  local w, h = media.w, media.h
+  local max = style.thumbMax
+  if w <= 0 or h <= 0 then
+    return max, math.floor(max * 3 / 4)
+  end
+  local scale = math.min(max / w, max / h)
+  return math.max(48, math.floor(w * scale)), math.max(48, math.floor(h * scale))
+end
+
+-- Body of a media message: thumbnail, audio player or file row.
+local function mediaBody(m, textColor: string)
+  local media = m.media or common.copyMedia({})
+  local busy = mediaBusy[m.id] == true
+  local subColor = if m.me then "on_primary_container/0.7" else "on_surface_variant"
+  local parts = {}
+
+  if m.kind == "audio" then
+    local playing = isPlaying(m)
+    table.insert(parts, ui.row({ gap = style.gap.md, align = "center" }, {
+      ui.button({
+        glyph = if playing then "player-stop" else "player-play",
+        variant = "ghost",
+        controlSize = "sm",
+        enabled = not busy,
+        tooltip = noctalia.tr(if playing then "panel.media.stop" else "panel.media.play"),
+        onClick = function()
+          toggleAudio(m)
+        end,
+      }),
+      ui.glyph({ name = if media.ptt then "microphone" else "music", size = 14, color = textColor }),
+      ui.label({
+        text = if busy then noctalia.tr("panel.media.loading") else common.duration(media.seconds),
+        fontSize = style.font.body,
+        color = textColor,
+      }),
+    }))
+  elseif m.kind == "document" then
+    local details = {}
+    if media.size > 0 then
+      table.insert(details, common.fileSize(media.size))
+    end
+    table.insert(parts, ui.row({ gap = style.gap.md, align = "center", onClick = function()
+      openMedia(m)
+    end }, {
+      ui.glyph({ name = "file", size = 24, color = textColor }),
+      ui.column({ gap = 2, flexGrow = 1 }, {
+        ui.label({
+          text = if m.text ~= "" then m.text else noctalia.tr("kind.document"),
+          fontSize = style.font.body,
+          fontWeight = "medium",
+          color = textColor,
+          maxLines = 2,
+          maxWidth = style.bubbleMax - 80,
+        }),
+        ui.label({
+          text = if busy then noctalia.tr("panel.media.loading") else table.concat(details, " "),
+          fontSize = style.font.caption,
+          color = subColor,
+        }),
+      }),
+      ui.glyph({ name = if media.file then "external-link" else "download", size = 16, color = textColor }),
+    }))
+  elseif media.thumb then
+    -- image, video, sticker with a preview
+    local w, h = thumbSize(media)
+    table.insert(parts, ui.image({
+      key = "thumb-" .. m.id,
+      path = media.thumb,
+      width = w,
+      height = h,
+      fit = "cover",
+      radius = style.radius.control,
+      tooltip = noctalia.tr("panel.media.open"),
+      onClick = function()
+        openMedia(m)
+      end,
+    }))
+    if m.kind == "video" or busy then
+      local info = {}
+      if m.kind == "video" then
+        table.insert(info, ui.glyph({ name = "player-play", size = 12, color = subColor }))
+        table.insert(info, ui.label({ text = common.duration(media.seconds), fontSize = style.font.caption, color = subColor }))
+      end
+      if busy then
+        table.insert(info, ui.label({ text = noctalia.tr("panel.media.loading"), fontSize = style.font.caption, color = subColor }))
+      end
+      table.insert(parts, ui.row({ gap = style.gap.xs, align = "center" }, info))
+    end
+  else
+    -- No preview: a button that downloads and opens it.
+    table.insert(parts, ui.button({
+      text = noctalia.tr("kind." .. m.kind),
+      glyph = common.kindGlyph(m.kind),
+      variant = "outline",
+      controlSize = "sm",
+      enabled = not busy,
+      tooltip = noctalia.tr("panel.media.open"),
+      onClick = function()
+        openMedia(m)
+      end,
+    }))
+  end
+
+  if mediaError[m.id] then
+    table.insert(parts, ui.label({ text = noctalia.tr(mediaError[m.id]), fontSize = style.font.caption, color = "error" }))
+  end
+  return parts
+end
+
+local MEDIA_KINDS = { image = true, video = true, audio = true, document = true, sticker = true }
+
 local function bubble(m, index: number, showSender: boolean)
   local mine = m.me
   local children = {}
@@ -560,13 +744,20 @@ local function bubble(m, index: number, showSender: boolean)
     }))
   end
   local textColor = if mine then "on_primary_container" else "on_surface"
-  if m.kind ~= "text" then
+  -- Media stored before download support has no "media" field: show the label only.
+  local isMedia = MEDIA_KINDS[m.kind] == true and m.media ~= nil
+  if isMedia then
+    for _, part in mediaBody(m, textColor) do
+      table.insert(children, part)
+    end
+  elseif m.kind ~= "text" then
     table.insert(children, ui.row({ gap = style.gap.xs, align = "center" }, {
       ui.glyph({ name = common.kindGlyph(m.kind), size = 14, color = textColor }),
       ui.label({ text = noctalia.tr("kind." .. m.kind), fontSize = style.font.body, color = textColor }),
     }))
   end
-  if m.text ~= "" then
+  -- Documents show their name in the file row; everything else shows the caption.
+  if m.text ~= "" and m.kind ~= "document" then
     table.insert(children, ui.label({
       text = m.text,
       fontSize = style.font.body,
@@ -788,6 +979,10 @@ noctalia.state.watch(common.KEY_DAEMON, function(value)
   render()
 end)
 noctalia.state.watch(common.KEY_MESSAGES, onMessages)
+noctalia.state.watch(common.KEY_PLAYBACK, function(value)
+  playback = value or {}
+  render()
+end)
 
 -- A notification asked to open a chat.
 local function checkOpenChat(value)

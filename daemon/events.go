@@ -50,6 +50,10 @@ type Message struct {
 	Kind string `json:"kind"`
 	TS   int64  `json:"ts"`
 	Me   bool   `json:"me"`
+	// Media is set for image, video, audio, document and sticker messages.
+	Media *MediaInfo `json:"media,omitempty"`
+	// Raw is the stored proto needed to download the media; never sent.
+	Raw []byte `json:"-"`
 }
 
 type MessageEvent struct {

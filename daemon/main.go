@@ -50,7 +50,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `usage:
-  noctalia-zapd run -data DIR [-socket PATH] [-history-limit N] [-qr-terminal] [-log-level LEVEL]
+  noctalia-zapd run -data DIR [-socket PATH] [-history-limit N] [-download-dir DIR] [-media-cache-mb N] [-qr-terminal] [-log-level LEVEL]
   noctalia-zapd ctl [-socket PATH] <command> [args]
   noctalia-zapd version
 
@@ -63,6 +63,8 @@ func cmdRun(args []string) int {
 	dataDir := fs.String("data", "", "data directory (session and local message store)")
 	socket := fs.String("socket", defaultSocketPath(), "control socket path")
 	historyLimit := fs.Int("history-limit", 50, "messages kept per chat from history sync and returned by default")
+	downloadDir := fs.String("download-dir", "", "folder for downloaded images, videos, documents and stickers (default: XDG downloads dir + /WhatsApp)")
+	mediaCacheMB := fs.Int("media-cache-mb", 500, "size limit in MiB of the audio cache")
 	qrTerminal := fs.Bool("qr-terminal", false, "also print the QR code to stderr")
 	logLevel := fs.String("log-level", "warn", "whatsmeow log level (debug, info, warn, error)")
 	_ = fs.Parse(args)
@@ -74,6 +76,23 @@ func cmdRun(args []string) int {
 	if *historyLimit <= 0 || *historyLimit > maxHistoryLimit {
 		fmt.Fprintf(os.Stderr, "run: -history-limit must be between 1 and %d\n", maxHistoryLimit)
 		return 2
+	}
+	if *mediaCacheMB <= 0 {
+		fmt.Fprintln(os.Stderr, "run: -media-cache-mb must be positive")
+		return 2
+	}
+	if *downloadDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "run: cannot find the home directory; use -download-dir")
+			return 2
+		}
+		*downloadDir = defaultDownloadDir(home)
+	}
+	dlDir, err := filepath.Abs(*downloadDir)
+	if err != nil {
+		log.Printf("download dir: %v", err)
+		return 1
 	}
 	// Everything the daemon creates (session keys, messages, QR) is private.
 	umask(0o077)
@@ -132,6 +151,8 @@ func cmdRun(args []string) int {
 		DataDir:      dir,
 		HistoryLimit: *historyLimit,
 		QRTerminal:   *qrTerminal,
+		DownloadDir:  dlDir,
+		MediaCacheMB: *mediaCacheMB,
 		WALog:        waLogger.Sub("Client"),
 	}, container, msgs, emit, cancel)
 

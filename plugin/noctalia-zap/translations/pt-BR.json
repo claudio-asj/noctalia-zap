@@ -90,6 +90,17 @@
     },
     "error": {
       "command": "O comando falhou. Veja o log."
+    },
+    "media": {
+      "open": "Abrir",
+      "play": "Tocar",
+      "stop": "Parar",
+      "loading": "Baixando…",
+      "unavailable": "Não está mais disponível nos servidores do WhatsApp.",
+      "offline": "Conecte para baixar.",
+      "no_player": "Instale o mpv para tocar áudios.",
+      "failed": "Não deu para baixar.",
+      "not_stored": "Esta mídia foi guardada antes do suporte a downloads. Abra pelo celular."
     }
   },
   "settings": {
@@ -122,6 +133,14 @@
     "notify_private": {
       "label": "Esconder o texto nas notificações",
       "description": "Mostra só \"Nova mensagem\" em vez do texto."
+    },
+    "download_dir": {
+      "label": "Pasta de downloads",
+      "description": "Onde ficam as fotos, vídeos e documentos que você abrir. Vazio usa Downloads/WhatsApp. Áudios ficam num cache privado."
+    },
+    "media_cache_mb": {
+      "label": "Cache de áudio (MB)",
+      "description": "Espaço para os áudios tocados. Os mais antigos são apagados quando enche."
     }
   },
   "notify": {
@@ -131,5 +150,9 @@
   },
   "badge": {
     "many": "{count}+"
+  },
+  "size": {
+    "kb": "{n} KB",
+    "mb": "{n} MB"
   }
 }

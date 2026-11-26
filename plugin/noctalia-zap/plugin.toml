@@ -100,6 +100,22 @@ min = 10
 max = 500
 
 [[setting]]
+key = "download_dir"
+type = "string"
+label_key = "settings.download_dir.label"
+description_key = "settings.download_dir.description"
+default = ""
+
+[[setting]]
+key = "media_cache_mb"
+type = "int"
+label_key = "settings.media_cache_mb.label"
+description_key = "settings.media_cache_mb.description"
+default = 500
+min = 50
+max = 10000
+
+[[setting]]
 key = "daemon_path"
 type = "string"
 label_key = "settings.daemon_path.label"

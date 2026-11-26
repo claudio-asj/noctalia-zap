@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -49,7 +51,47 @@ func OpenMsgStore(path string) (*MsgStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
 	return &MsgStore{db: db}, nil
+}
+
+// migrate adds the media columns to databases created by earlier versions.
+func migrate(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(messages)`)
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		have[name] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, c := range []struct{ name, def string }{
+		{"raw", "BLOB"},
+		{"media", "TEXT"},
+		{"file", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if have[c.name] {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *MsgStore) Close() error { return s.db.Close() }
@@ -102,9 +144,22 @@ func (s *MsgStore) AddMessage(ctx context.Context, m Message, unread bool) (bool
 	}
 	defer tx.Rollback()
 
+	var mediaJSON any
+	if m.Media != nil {
+		meta := *m.Media
+		meta.Thumb, meta.File = "", ""
+		if b, err := json.Marshal(meta); err == nil {
+			mediaJSON = string(b)
+		}
+	}
+	var raw any
+	if len(m.Raw) > 0 {
+		raw = m.Raw
+	}
 	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO messages
-		(chat, id, sender, name, text, kind, ts, me, unread) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.Chat, m.ID, m.From, m.Name, m.Text, m.Kind, m.TS, m.Me, unread)
+		(chat, id, sender, name, text, kind, ts, me, unread, raw, media)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Chat, m.ID, m.From, m.Name, m.Text, m.Kind, m.TS, m.Me, unread, raw, mediaJSON)
 	if err != nil {
 		return false, err
 	}
@@ -250,7 +305,7 @@ func (s *MsgStore) History(ctx context.Context, jid string, limit int) ([]Messag
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.QueryContext(ctx, `SELECT * FROM (
-		SELECT id, chat, sender, name, text, kind, ts, me FROM messages
+		SELECT id, chat, sender, name, text, kind, ts, me, media, file FROM messages
 		WHERE chat = ? ORDER BY ts DESC LIMIT ?) ORDER BY ts`, jid, limit)
 	if err != nil {
 		return nil, err
@@ -259,12 +314,58 @@ func (s *MsgStore) History(ctx context.Context, jid string, limit int) ([]Messag
 	msgs := []Message{}
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.Chat, &m.From, &m.Name, &m.Text, &m.Kind, &m.TS, &m.Me); err != nil {
+		var media sql.NullString
+		var file string
+		if err := rows.Scan(&m.ID, &m.Chat, &m.From, &m.Name, &m.Text, &m.Kind, &m.TS, &m.Me, &media, &file); err != nil {
 			return nil, err
+		}
+		if media.Valid {
+			var mi MediaInfo
+			if json.Unmarshal([]byte(media.String), &mi) == nil {
+				mi.File = file
+				m.Media = &mi
+			}
 		}
 		msgs = append(msgs, m)
 	}
 	return msgs, rows.Err()
+}
+
+// MediaRef is what is needed to download a media message again.
+type MediaRef struct {
+	Kind string
+	TS   int64
+	Raw  []byte
+	Meta MediaInfo
+	File string // last saved path, may no longer exist
+}
+
+// MediaRef returns the stored media data of a message. found is false when the
+// message does not exist. Messages stored before media support have no Raw.
+func (s *MsgStore) MediaRef(ctx context.Context, chat, id string) (ref MediaRef, found bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var media sql.NullString
+	err = s.db.QueryRowContext(ctx, `SELECT kind, ts, raw, media, file FROM messages
+		WHERE chat = ? AND id = ?`, chat, id).Scan(&ref.Kind, &ref.TS, &ref.Raw, &media, &ref.File)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ref, false, nil
+	}
+	if err != nil {
+		return ref, false, err
+	}
+	if media.Valid {
+		_ = json.Unmarshal([]byte(media.String), &ref.Meta)
+	}
+	return ref, true, nil
+}
+
+// SetMediaFile records where a downloaded media file was saved.
+func (s *MsgStore) SetMediaFile(ctx context.Context, chat, id, path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.ExecContext(ctx, `UPDATE messages SET file = ? WHERE chat = ? AND id = ?`, path, chat, id)
+	return err
 }
 
 // Clear removes every chat and message (used on logout).

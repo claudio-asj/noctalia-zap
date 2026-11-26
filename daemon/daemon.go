@@ -38,6 +38,10 @@ type Config struct {
 	DataDir      string
 	HistoryLimit int
 	QRTerminal   bool
+	// DownloadDir receives image, video, document and sticker downloads.
+	DownloadDir string
+	// MediaCacheMB limits the audio cache in media/.
+	MediaCacheMB int
 	WALog        waLog.Logger
 }
 
@@ -47,6 +51,8 @@ type Daemon struct {
 	store     *MsgStore
 	emit      *Emitter
 	quit      context.CancelFunc
+	player    *Player
+	downloads keyedLock
 
 	// lifecycle serializes Start, login and logout so clients are never swapped concurrently.
 	lifecycle sync.Mutex
@@ -73,6 +79,7 @@ func NewDaemon(cfg Config, container *sqlstore.Container, msgs *MsgStore, emit *
 		store:       msgs,
 		emit:        emit,
 		quit:        quit,
+		player:      NewPlayer(emit),
 		nameLookups: map[string]bool{},
 	}
 }
@@ -144,6 +151,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 }
 
 func (d *Daemon) Stop() {
+	d.player.Stop()
 	if c := d.getClient(); c != nil {
 		c.Disconnect()
 	}
@@ -346,6 +354,11 @@ func (d *Daemon) onLoggedOut(ctx context.Context, detail string) {
 	if err := d.store.Clear(ctx); err != nil {
 		log.Printf("clear store: %v", err)
 	}
+	d.player.Stop()
+	// Only the cache and previews go; the user's downloads folder is never touched.
+	if err := os.RemoveAll(mediaDir(d.cfg.DataDir)); err != nil {
+		log.Printf("remove media: %v", err)
+	}
 	d.setStatus(StateLoggedOut, detail)
 	d.emitChats(ctx)
 }
@@ -400,6 +413,11 @@ func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bo
 			msg.Name = evt.Info.PushName
 		}
 	}
+	mp := extractMedia(evt.Message)
+	if mp != nil {
+		info := mp.Info
+		msg.Media, msg.Raw = &info, mp.Raw
+	}
 	inserted, err := d.store.AddMessage(ctx, msg, live && !me)
 	if err != nil {
 		log.Printf("store message: %v", err)
@@ -407,6 +425,12 @@ func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bo
 	}
 	if !inserted {
 		return
+	}
+	if mp != nil {
+		if err := writeThumb(d.cfg.DataDir, msg.Chat, msg.ID, kind, mp.Thumb); err != nil {
+			log.Printf("write thumb: %v", err)
+		}
+		fillMedia(d.cfg.DataDir, &msg)
 	}
 	pushName := ""
 	if !me && chat.Server != types.GroupServer {
@@ -434,6 +458,7 @@ func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bo
 
 // emitMessage announces a new message, with the text cut to keep the line short.
 func (d *Daemon) emitMessage(ctx context.Context, msg Message, backlog bool) {
+	msg.Raw = nil
 	ev := MessageEvent{Type: "message", Message: msg, Backlog: backlog}
 	ev.Muted = d.isMuted(ctx, msg.Chat)
 	ev.Name, _ = clip(msg.Name, maxPreviewText)
@@ -668,6 +693,13 @@ func (d *Daemon) Handle(ctx context.Context, req Request) Response {
 		return d.cmdSend(ctx, req)
 	case "read":
 		return d.cmdRead(ctx, req)
+	case "media":
+		return d.cmdMedia(ctx, req)
+	case "play":
+		return d.cmdPlay(ctx, req)
+	case "stop":
+		d.player.Stop()
+		return Response{OK: true}
 	case "login":
 		return d.cmdLogin(ctx)
 	case "logout":
@@ -703,6 +735,9 @@ func (d *Daemon) cmdHistory(ctx context.Context, req Request) Response {
 	msgs, err := d.store.History(ctx, jid.String(), limit)
 	if err != nil {
 		return fail(err)
+	}
+	for i := range msgs {
+		fillMedia(d.cfg.DataDir, &msgs[i])
 	}
 	return Response{OK: true, Data: msgs}
 }

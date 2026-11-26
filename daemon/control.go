@@ -25,6 +25,7 @@ type Request struct {
 	Cmd   string `json:"cmd"`
 	Chat  string `json:"chat,omitempty"`
 	Text  string `json:"text,omitempty"`
+	ID    string `json:"id,omitempty"`
 	Limit int    `json:"limit,omitempty"`
 }
 
@@ -202,6 +203,9 @@ const ctlUsage = `commands:
   send <chat-jid> <text>     (use "-" as text to read it from stdin)
   send <chat-jid> --file <path>  (text read from the file, which is then removed)
   read <chat-jid>
+  media <chat-jid> <msg-id>  (download if needed, print the file path)
+  play <chat-jid> <msg-id>
+  stop
   login
   logout
   quit`
@@ -213,7 +217,7 @@ func parseCtlArgs(args []string) (Request, error) {
 	req := Request{Cmd: args[0]}
 	rest := args[1:]
 	switch req.Cmd {
-	case "status", "chats", "login", "logout", "quit":
+	case "status", "chats", "login", "logout", "quit", "stop":
 		if len(rest) != 0 {
 			return req, fmt.Errorf("%s takes no arguments", req.Cmd)
 		}
@@ -222,6 +226,11 @@ func parseCtlArgs(args []string) (Request, error) {
 			return req, errors.New("usage: read <chat-jid>")
 		}
 		req.Chat = rest[0]
+	case "media", "play":
+		if len(rest) != 2 || rest[1] == "" {
+			return req, fmt.Errorf("usage: %s <chat-jid> <msg-id>", req.Cmd)
+		}
+		req.Chat, req.ID = rest[0], rest[1]
 	case "history":
 		if len(rest) < 1 || len(rest) > 2 {
 			return req, errors.New("usage: history <chat-jid> [limit]")

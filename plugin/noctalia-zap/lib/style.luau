@@ -12,5 +12,6 @@ return {
   avatar = 36,
   qrSize = 280,
   bubbleMax = 420,
+  thumbMax = 240,
   barGlyph = 14,
 }

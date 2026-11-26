@@ -97,9 +97,20 @@ evento `message` quanto no `history`:
 
 - Todos os campos são opcionais. `thumb` só existe se a mensagem trouxe prévia (`JPEGThumbnail`; figurinha:
   `PngThumbnail` em `.png`) e o arquivo foi gravado. `file` só existe se a mídia já foi baixada para o cache.
-- `<h>` = os primeiros 32 caracteres hex de `sha256(chat + "|" + id)`. Arquivos 0600, diretório `media/` 0700
-  dentro do diretório de dados. Extensão do arquivo baixado a partir do `mime` (`audio/ogg` → `.ogg`; desconhecido →
+- `<h>` = os primeiros 32 caracteres hex de `sha256(chat + "|" + id)`. Diretório `media/` 0700 dentro do
+  diretório de dados; arquivos de cache 0600. Extensão a partir do `mime` (`audio/ogg` → `.ogg`; desconhecido →
   `.bin`).
+- **Onde o arquivo baixado fica:**
+  - `audio` → cache: `media/<h>.<ext>`. Entra no limite `-media-cache-mb` e na limpeza automática.
+  - `image`, `video`, `document`, `sticker` → pasta de downloads do usuário: flag `-download-dir DIR`. Se vazia,
+    o padrão é `XDG_DOWNLOAD_DIR` de `~/.config/user-dirs.dirs` (ou `~/Downloads` se não existir) + `/WhatsApp`.
+    Criada com `MkdirAll` 0755 se não existir. Nunca é limpa pelo daemon.
+  - Nome na pasta de downloads: documento usa o nome original (`FileName`), sem `/`, sem `..`, sem caracteres de
+    controle, até 120 bytes; o resto usa `WhatsApp <tipo> AAAA-MM-DD HH.MM.SS.<ext>` com o horário da mensagem
+    (`tipo`: Image, Video, Sticker). Se já existir um arquivo com o nome, acrescenta ` (1)`, ` (2)`... antes da
+    extensão. Arquivo criado com `O_EXCL` (nunca sobrescreve nada do usuário).
+  - O caminho final fica gravado no banco (coluna `file`), e é ele que volta em `media.file` e no comando `media`.
+    Se o usuário apagar ou mover o arquivo, `media.file` deixa de vir e o próximo `media` baixa de novo.
 - O banco guarda, para mensagens de mídia, o proto da mensagem (`raw BLOB`, necessário para baixar depois) e os
   metadados (`media TEXT`, JSON). Migração com `ALTER TABLE ... ADD COLUMN` quando a coluna não existir.
 
@@ -111,15 +122,17 @@ Comandos novos:
 {"cmd":"stop"}                             → {"ok":true}
 ```
 
-- Erros de `media`/`play`: `not_media`, `not_found`, `media_unavailable` (404/410: mídia expirou no servidor),
+- Erros de `media`/`play`: `not_media`, `not_found`, `not_stored` (mensagem guardada antes da fase 4, sem as
+  chaves de download), `media_unavailable` (404/410: mídia expirou no servidor),
   `not connected` (precisa baixar e está offline), `no_player`.
 - `ctl media <jid> <id>`, `ctl play <jid> <id>`, `ctl stop`.
 - Player: o daemon mantém no máximo um processo, com argv fixo: `mpv --no-video --really-quiet --no-terminal
   <arquivo>`; sem mpv, `ffplay -nodisp -autoexit -loglevel quiet <arquivo>`; sem os dois, erro `no_player`.
   `play` mata o anterior. Evento ao começar e ao terminar (fim, `stop` ou novo `play`):
   `{"type":"playback","chat":"jid","id":"msgid","state":"playing|stopped"}`.
-- Cache: flag `-media-cache-mb N` (padrão 500). Depois de cada download, apaga os arquivos mais antigos (mtime)
-  de `media/` (não `media/thumbs/`) até caber, nunca o que acabou de baixar. Logout apaga `media/` inteiro.
+- Cache: flag `-media-cache-mb N` (padrão 500). Depois de cada download para o cache, apaga os arquivos mais
+  antigos (mtime) de `media/` (não `media/thumbs/`) até caber, nunca o que acabou de baixar. Logout apaga `media/`
+  inteiro, mas nunca a pasta de downloads do usuário.
 
 ## Plugin (Luau)
 

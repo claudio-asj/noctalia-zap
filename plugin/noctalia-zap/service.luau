@@ -18,6 +18,7 @@ local lastStart = 0
 local failures = 0
 local restartPending = false
 local pendingChats = nil -- chat pages being assembled
+local runningConfig = nil -- configKey() the daemon was started with
 local chatNames = {} -- jid -> name, from the last chat list
 local archivedChats = {} -- jid -> true
 local recent = {} -- last live messages, each with a sequence number
@@ -169,6 +170,7 @@ local function onMessage(event)
     ts = tonumber(event.ts) or 0,
     me = event.me == true,
     truncated = event.truncated == true,
+    media = common.copyMedia(event.media),
     backlog = event.backlog == true,
     muted = event.muted == true,
   }
@@ -226,7 +228,23 @@ local function onLine(line: string)
     end
   elseif event.type == "message" then
     onMessage(event)
+  elseif event.type == "playback" then
+    noctalia.state.set(common.KEY_PLAYBACK, {
+      chat = event.chat or "",
+      id = event.id or "",
+      playing = event.state == "playing",
+    })
   end
+end
+
+-- Settings that need a daemon restart when they change.
+local function configKey(): string
+  return table.concat({
+    tostring(resolveBinary()),
+    tostring(noctalia.getConfig("history_limit")),
+    tostring(noctalia.getConfig("media_cache_mb")),
+    tostring(noctalia.getConfig("download_dir")),
+  }, "\0")
 end
 
 local function startDaemon()
@@ -242,14 +260,22 @@ local function startDaemon()
     return
   end
   local limit = tonumber(noctalia.getConfig("history_limit")) or 50
-  -- runStream only takes a shell string: only the binary path and the data dir
-  -- go in, each quoted. Nothing from messages ever reaches a command line here.
+  local cacheMb = tonumber(noctalia.getConfig("media_cache_mb")) or 500
+  local downloadDir = noctalia.getConfig("download_dir")
+  -- runStream only takes a shell string: only settings and the data dir go
+  -- in, each quoted. Nothing from messages ever reaches a command line here.
   local cmd = "exec "
     .. shellQuote(binary)
     .. " run -data "
     .. shellQuote(dataDir)
     .. " -history-limit "
     .. tostring(math.floor(limit))
+    .. " -media-cache-mb "
+    .. tostring(math.floor(cacheMb))
+  if type(downloadDir) == "string" and downloadDir ~= "" then
+    cmd ..= " -download-dir " .. shellQuote(noctalia.expandPath(downloadDir))
+  end
+  runningConfig = configKey()
   lastStart = noctalia.nowMs()
   failures = 0
   setStatus("connecting")
@@ -284,14 +310,13 @@ function update()
 end
 
 function onConfigChanged()
-  -- The binary path or history limit may have changed: restart the daemon.
-  local newBinary = resolveBinary()
-  if newBinary ~= binary and binary ~= nil then
+  -- Restart the daemon only when one of its own settings changed.
+  if binary == nil then
+    startDaemon()
+  elseif configKey() ~= runningConfig then
     noctalia.runAsync({ binary, "ctl", "quit" }, function(_r)
       restartPending = true
     end)
-  elseif binary == nil then
-    startDaemon()
   end
 end
 

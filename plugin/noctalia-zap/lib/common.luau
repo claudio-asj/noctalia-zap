@@ -24,6 +24,7 @@ M.KEY_CHATS = "chats" -- list of chats, most recent first
 M.KEY_UNREAD = "unread" -- total unread messages
 M.KEY_DAEMON = "daemon" -- path of the noctalia-zapd binary, or nil when missing
 M.KEY_MESSAGES = "messages" -- { seq = number, items = { message } }: last live messages
+M.KEY_PLAYBACK = "playback" -- { chat, id, playing }: the audio player state
 -- Written by the panel:
 M.KEY_ACTIVE_CHAT = "activeChat" -- jid shown in the open panel, or nil
 M.KEY_PANEL_OPEN = "panelOpen" -- true while a panel is open
@@ -65,6 +66,37 @@ local KIND_GLYPHS = {
 
 function M.kindGlyph(kind: string?): string
   return KIND_GLYPHS[kind or ""] or "message"
+end
+
+-- Keeps only the known media fields, with the right types.
+function M.copyMedia(media): any
+  if type(media) ~= "table" then
+    return nil
+  end
+  return {
+    thumb = if type(media.thumb) == "string" then media.thumb else nil,
+    file = if type(media.file) == "string" then media.file else nil,
+    w = tonumber(media.w) or 0,
+    h = tonumber(media.h) or 0,
+    seconds = tonumber(media.seconds) or 0,
+    size = tonumber(media.size) or 0,
+    mime = if type(media.mime) == "string" then media.mime else "",
+    ptt = media.ptt == true,
+  }
+end
+
+-- "1:05" from seconds.
+function M.duration(seconds: number): string
+  seconds = math.max(0, math.floor(seconds))
+  return string.format("%d:%02d", seconds // 60, seconds % 60)
+end
+
+-- File size for documents, translated unit.
+function M.fileSize(bytes: number): string
+  if bytes >= 1024 * 1024 then
+    return noctalia.tr("size.mb", { n = string.format("%.1f", bytes / (1024 * 1024)) })
+  end
+  return noctalia.tr("size.kb", { n = tostring(math.max(1, math.floor(bytes / 1024))) })
 end
 
 -- Badge text, capped so it stays small.

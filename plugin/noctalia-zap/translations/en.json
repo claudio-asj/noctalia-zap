@@ -90,6 +90,17 @@
     },
     "error": {
       "command": "The command failed. Check the log."
+    },
+    "media": {
+      "open": "Open",
+      "play": "Play",
+      "stop": "Stop",
+      "loading": "Downloading…",
+      "unavailable": "No longer available on WhatsApp's servers.",
+      "offline": "Connect to download.",
+      "no_player": "Install mpv to play audio.",
+      "failed": "Could not download.",
+      "not_stored": "This media was saved before downloads were supported. Open it on the phone."
     }
   },
   "settings": {
@@ -122,6 +133,14 @@
     "notify_private": {
       "label": "Hide text in notifications",
       "description": "Show only \"New message\" instead of the message text."
+    },
+    "download_dir": {
+      "label": "Download folder",
+      "description": "Where photos, videos and documents you open are saved. Empty means Downloads/WhatsApp. Audio stays in a private cache."
+    },
+    "media_cache_mb": {
+      "label": "Audio cache (MB)",
+      "description": "Space for played audio. The oldest files are removed when it is full."
     }
   },
   "notify": {
@@ -131,5 +150,9 @@
   },
   "badge": {
     "many": "{count}+"
+  },
+  "size": {
+    "kb": "{n} KB",
+    "mb": "{n} MB"
   }
 }
