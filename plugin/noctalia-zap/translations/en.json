@@ -70,7 +70,7 @@
     "chat": {
       "pick": "Pick a chat on the left.",
       "today": "Today",
-      "truncated": "Shortened",
+      "truncated": "Shortened · {time}",
       "loading": "Loading messages…",
       "history_error": "Could not load the messages.",
       "empty": "No messages saved for this chat yet.",
@@ -125,5 +125,8 @@
     "group_title": "{sender} · {chat}",
     "hidden": "New message",
     "reply": "Reply"
+  },
+  "badge": {
+    "many": "{count}+"
   }
 }

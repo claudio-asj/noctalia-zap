@@ -67,6 +67,14 @@ function M.kindGlyph(kind: string?): string
   return KIND_GLYPHS[kind or ""] or "message"
 end
 
+-- Badge text, capped so it stays small.
+function M.badgeText(count: number): string
+  if count > 99 then
+    return noctalia.tr("badge.many", { count = 99 })
+  end
+  return tostring(count)
+end
+
 -- First visible character of a name, for the avatar placeholder.
 function M.initial(name: string?): string
   if name == nil or name == "" then

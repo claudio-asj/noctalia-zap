@@ -20,6 +20,8 @@ local pendingChats = nil -- chat pages being assembled
 local chatNames = {} -- jid -> name, from the last chat list
 local recent = {} -- last live messages, each with a sequence number
 local seq = 0
+-- Changes on every load, so the panel can tell that seq started over.
+local epoch = noctalia.nowMs()
 local lastNotify = {} -- jid -> nowMs of the last notification
 
 local function shellQuote(value: string): string
@@ -60,12 +62,12 @@ local function onChats(items)
   local chats = {}
   local unread = 0
   for i, c in items do
-    if i > MAX_CHATS then
-      break
-    end
     if type(c) == "table" and type(c.jid) == "string" then
       local n = tonumber(c.unread) or 0
-      unread += n
+      unread += n -- counted for every chat, also the ones cut from the list
+      if i > MAX_CHATS then
+        continue
+      end
       table.insert(chats, {
         jid = c.jid,
         name = c.name or "",
@@ -128,6 +130,11 @@ local function onMessage(event)
   if type(event.chat) ~= "string" then
     return
   end
+  if event.backlog == true then
+    -- Offline sync can bring hundreds at once. They are not published one by
+    -- one: the panel reloads the open chat when the chat list shows it changed.
+    return
+  end
   seq += 1
   local m = {
     seq = seq,
@@ -147,7 +154,7 @@ local function onMessage(event)
   while #recent > MAX_RECENT do
     table.remove(recent, 1)
   end
-  noctalia.state.set(common.KEY_MESSAGES, { seq = seq, items = recent })
+  noctalia.state.set(common.KEY_MESSAGES, { epoch = epoch, seq = seq, items = recent })
   notify(m)
 end
 

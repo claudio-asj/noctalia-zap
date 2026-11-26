@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -430,8 +431,19 @@ func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bo
 // emitMessage announces a new message, with the text cut to keep the line short.
 func (d *Daemon) emitMessage(ctx context.Context, msg Message, backlog bool) {
 	ev := MessageEvent{Type: "message", Message: msg, Backlog: backlog}
-	ev.Text, ev.Truncated = clip(msg.Text, maxEventText)
 	ev.Muted = d.isMuted(ctx, msg.Chat)
+	ev.Name, _ = clip(msg.Name, maxPreviewText)
+	// JSON escaping can grow the text a lot (quotes, newlines, control
+	// characters), so measure the encoded line and cut until it fits.
+	limit := maxEventText
+	for {
+		ev.Text, ev.Truncated = clip(msg.Text, limit)
+		b, err := json.Marshal(ev)
+		if err != nil || len(b) <= maxPageBytes || limit == 0 {
+			break
+		}
+		limit /= 2
+	}
 	d.emit.Emit(ev)
 }
 

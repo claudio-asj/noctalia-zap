@@ -174,3 +174,16 @@ func TestParseCtlSendFile(t *testing.T) {
 		t.Fatalf("send --file = %+v, %v", req, err)
 	}
 }
+
+func TestEmitMessageFitsLine(t *testing.T) {
+	var buf strings.Builder
+	d := &Daemon{emit: NewEmitter(&buf), nameLookups: map[string]bool{}}
+	d.emitMessage(context.Background(), Message{ID: "1", Chat: "1@s.whatsapp.net", Text: strings.Repeat("\"\n\x01", 3000)}, false)
+	line := buf.String()
+	if len(line) > maxPageBytes+1 {
+		t.Fatalf("line too long: %d", len(line))
+	}
+	if !strings.Contains(line, `"truncated":true`) {
+		t.Fatal("expected truncated flag")
+	}
+}

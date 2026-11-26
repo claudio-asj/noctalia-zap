@@ -70,7 +70,7 @@
     "chat": {
       "pick": "Escolha uma conversa à esquerda.",
       "today": "Hoje",
-      "truncated": "Cortada",
+      "truncated": "Cortada · {time}",
       "loading": "Carregando mensagens…",
       "history_error": "Não deu para carregar as mensagens.",
       "empty": "Nenhuma mensagem guardada desta conversa ainda.",
@@ -125,5 +125,8 @@
     "group_title": "{sender} · {chat}",
     "hidden": "Nova mensagem",
     "reply": "Responder"
+  },
+  "badge": {
+    "many": "{count}+"
   }
 }

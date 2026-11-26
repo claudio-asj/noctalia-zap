@@ -35,7 +35,7 @@ local function render()
       children,
       ui.row({ fill = "primary", radius = style.radius.card, paddingH = style.gap.sm, align = "center" }, {
         ui.label({
-          text = if unread > 99 then "99+" else tostring(unread),
+          text = common.badgeText(unread),
           color = "on_primary",
           fontWeight = "bold",
           fontSize = style.font.caption,

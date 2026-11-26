@@ -14,6 +14,9 @@ local dataDir = noctalia.pluginDataDir()
 
 local HISTORY_LIMIT = 50
 local MAX_LOADED = 200 -- messages kept for the open chat
+-- Bubbles drawn: with day separators this stays under the 256 children a
+-- scroll accepts.
+local MAX_DRAWN = 120
 -- Rows drawn in the chat list. A scroll takes at most 256 children and every
 -- row costs render time; search reaches the rest.
 local MAX_ROWS = 80
@@ -30,7 +33,9 @@ local messages = {} -- oldest first
 local messageIds = {} -- id -> true, to drop duplicates
 local loadingHistory = false
 local historyError = false
-local lastSeq = (noctalia.state.get(common.KEY_MESSAGES) or {}).seq or 0
+local initialMessages = noctalia.state.get(common.KEY_MESSAGES) or {}
+local lastSeq = initialMessages.seq or 0
+local lastEpoch = initialMessages.epoch
 local lastOpenChat = 0
 local draft = ""
 local composerRev = 0
@@ -142,6 +147,10 @@ local function loadHistory(jid, limit)
     for _, m in live do
       addMessage(m)
     end
+    -- Older live messages may predate the fresh history: keep time order.
+    table.sort(messages, function(a, b)
+      return a.ts < b.ts
+    end)
     scrollRev += 1
     render()
   end, 30000)
@@ -158,8 +167,9 @@ local function selectChat(jid)
   sendError = false
   publishActive()
   loadHistory(jid, HISTORY_LIMIT)
+  -- Receipts only once the user can see the chat; onOpen covers the rest.
   local c = chatByJid(jid)
-  if c and c.unread > 0 then
+  if isOpen and c and c.unread > 0 then
     markRead(jid)
   end
   render()
@@ -197,9 +207,38 @@ local function send()
   render()
 end
 
+-- Removes outbox files left behind if a send never finished (panel closed,
+-- shell restarted). They hold message text, so they must not linger.
+local function cleanOutbox()
+  if dataDir == nil or sending then
+    return
+  end
+  local files = noctalia.listDir(dataDir)
+  if files == nil then
+    return
+  end
+  for _, name in files do
+    if string.sub(name, 1, 7) == "outbox-" then
+      noctalia.removeFile(`{dataDir}/{name}`)
+    end
+  end
+end
+
 -- Live messages from the service.
 local function onMessages(value)
   if type(value) ~= "table" or type(value.items) ~= "table" then
+    return
+  end
+  if value.epoch ~= lastEpoch then
+    -- The service restarted and seq starts over.
+    lastEpoch = value.epoch
+    lastSeq = 0
+  end
+  local first = value.items[1]
+  if selected ~= nil and first ~= nil and lastSeq > 0 and first.seq > lastSeq + 1 then
+    -- More messages arrived than the service keeps: reload instead of guessing.
+    lastSeq = value.seq or lastSeq
+    loadHistory(selected, HISTORY_LIMIT)
     return
   end
   local changed = false
@@ -307,7 +346,7 @@ end
 local function badge(count: number)
   return ui.row({ fill = "primary", radius = style.radius.card, paddingH = style.gap.sm, align = "center" }, {
     ui.label({
-      text = if count > 99 then "99+" else tostring(count),
+      text = common.badgeText(count),
       color = "on_primary",
       fontWeight = "bold",
       fontSize = style.font.caption,
@@ -436,6 +475,8 @@ local function logoutConfirm()
           ctl({ "logout" }, function(_ok)
             confirmLogout = false
             selected = nil
+            messages, messageIds = {}, {}
+            publishActive()
           end)
         end,
       }),
@@ -447,10 +488,10 @@ local function dayLabel(ts: number): string
   if noctalia.formatTime("%Y-%m-%d", ts) == noctalia.formatTime("%Y-%m-%d") then
     return noctalia.tr("panel.chat.today")
   end
-  return noctalia.formatTime("%d/%m/%Y", ts)
+  return noctalia.formatTime("%x", ts) -- the locale's date format
 end
 
-local function bubble(m, showSender: boolean)
+local function bubble(m, index: number, showSender: boolean)
   local mine = m.me
   local children = {}
   if showSender and not mine and m.name ~= "" then
@@ -479,7 +520,7 @@ local function bubble(m, showSender: boolean)
   end
   local footer = noctalia.formatTime("%H:%M", m.ts)
   if m.truncated then
-    footer = noctalia.tr("panel.chat.truncated") .. " · " .. footer
+    footer = noctalia.tr("panel.chat.truncated", { time = footer })
   end
   table.insert(children, ui.label({
     text = footer,
@@ -487,7 +528,8 @@ local function bubble(m, showSender: boolean)
     color = if mine then "on_primary_container/0.7" else "on_surface_variant",
     textAlign = "end",
   }))
-  return ui.row({ key = m.id, justify = if mine then "end" else "start" }, {
+  local key = if m.id ~= "" then m.id else `msg-{index}-{m.ts}`
+  return ui.row({ key = key, justify = if mine then "end" else "start" }, {
     ui.column({
       gap = style.gap.xs,
       padding = style.padding.sm,
@@ -513,7 +555,9 @@ local function messageList(group: boolean)
   end
   local rows = {}
   local lastDay = nil
-  for _, m in messages do
+  local firstDrawn = math.max(1, #messages - MAX_DRAWN + 1)
+  for i = firstDrawn, #messages do
+    local m = messages[i]
     local day = noctalia.formatTime("%Y-%m-%d", m.ts)
     if day ~= lastDay then
       lastDay = day
@@ -521,7 +565,7 @@ local function messageList(group: boolean)
         ui.label({ text = dayLabel(m.ts), fontSize = style.font.caption, color = "on_surface_variant" }),
       }))
     end
-    table.insert(rows, bubble(m, group))
+    table.insert(rows, bubble(m, i, group))
   end
   return ui.scroll({ flexGrow = 1, gap = style.gap.sm, stickToBottom = true, scrollToBottomRev = scrollRev }, rows)
 end
@@ -672,6 +716,15 @@ noctalia.state.watch(common.KEY_QR, function(value)
 end)
 noctalia.state.watch(common.KEY_CHATS, function(value)
   chats = value or {}
+  -- Messages from offline sync are not sent live: reload the open chat when
+  -- the list says it has something newer than what is shown.
+  if isOpen and selected ~= nil and not loadingHistory then
+    local c = chatByJid(selected)
+    local newest = if #messages > 0 then messages[#messages].ts else 0
+    if c and c.ts > newest then
+      loadHistory(selected, HISTORY_LIMIT)
+    end
+  end
   render()
 end)
 noctalia.state.watch(common.KEY_DAEMON, function(value)
@@ -692,6 +745,10 @@ noctalia.state.watch(common.KEY_OPEN_CHAT, checkOpenChat)
 function onOpen(_context)
   isOpen = true
   actionError = nil
+  -- The input is recreated empty on open, so the draft must go with it.
+  draft = ""
+  composerRev += 1
+  cleanOutbox()
   noctalia.state.set(common.KEY_PANEL_OPEN, true)
   publishActive()
   checkOpenChat(noctalia.state.get(common.KEY_OPEN_CHAT))
