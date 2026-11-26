@@ -44,6 +44,7 @@ Estrutura, AGENTS.md (agnóstico de ferramenta), papéis de agentes, arquitetura
 - [x] Status de entrega (enviado, entregue, lido) e "digitando…"
 - [x] Carregar mensagens antigas (botão no topo; pede ao celular quando o banco acaba)
 - [x] Online só com a conversa aberta no painel (para receber o "digitando…")
+- **Pronto quando:** responder, reagir e ver "digitando…" com um contato real ✅ (testado em 2026-11-26)
 
 ## Fase 7: Enviar mídia
 - [ ] Colar imagem da área de transferência
