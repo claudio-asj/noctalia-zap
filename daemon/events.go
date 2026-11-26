@@ -27,6 +27,8 @@ type Chat struct {
 	Last     string `json:"last"`
 	LastKind string `json:"last_kind"`
 	TS       int64  `json:"ts"`
+	Archived bool   `json:"archived,omitempty"`
+	Pinned   bool   `json:"pinned,omitempty"`
 }
 
 // ChatsEvent carries one page of the full chat list. The plugin's line reader

@@ -65,7 +65,10 @@
       "search": "Buscar conversas",
       "empty": "Nenhuma conversa ainda. Elas aparecem conforme o WhatsApp sincroniza.",
       "no_match": "Nenhuma conversa corresponde à busca.",
-      "more": "Mostrando as conversas mais recentes. Use a busca para achar as antigas."
+      "more": "Mostrando as conversas mais recentes. Use a busca para achar as antigas.",
+      "archived_count": "Arquivadas ({count})",
+      "archived_title": "Arquivadas",
+      "back": "Voltar às conversas"
     },
     "chat": {
       "pick": "Escolha uma conversa à esquerda.",

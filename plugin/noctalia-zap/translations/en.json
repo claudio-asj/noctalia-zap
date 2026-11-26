@@ -65,7 +65,10 @@
       "search": "Search chats",
       "empty": "No chats yet. They show up as WhatsApp syncs.",
       "no_match": "No chat matches the search.",
-      "more": "Showing the most recent chats. Search to find older ones."
+      "more": "Showing the most recent chats. Search to find older ones.",
+      "archived_count": "Archived ({count})",
+      "archived_title": "Archived",
+      "back": "Back to chats"
     },
     "chat": {
       "pick": "Pick a chat on the left.",

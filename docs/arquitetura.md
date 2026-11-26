@@ -45,13 +45,15 @@ Eventos (daemon → plugin, stdout):
 ```json
 {"type":"status","state":"connecting|qr|connected|logged_out|error","detail":"..."}
 {"type":"qr","png":"/abs/path/qr.png"}
-{"type":"chats","page":0,"pages":3,"items":[{"jid":"...","name":"...","unread":2,"last":"...","last_kind":"text","ts":1700000000}]}
+{"type":"chats","page":0,"pages":3,"items":[{"jid":"...","name":"...","unread":2,"last":"...","last_kind":"text","ts":1700000000,"archived":false,"pinned":false}]}
 {"type":"message","id":"...","chat":"jid","from":"jid","name":"...","text":"...","kind":"text","ts":1700000000,"me":false,"backlog":false,"truncated":false,"muted":false}
 ```
 
 - Cada linha fica abaixo de ~8 KB, porque o `runStream` do Noctalia quebra linhas longas.
 - `chats` sai na partida, ao conectar e (com debounce de 300 ms) depois de qualquer mudança. É a lista completa,
   em páginas: a página 0 recomeça a lista e a última (`page == pages-1`) fecha. `last` vem cortado em 200 bytes.
+  Fixadas primeiro; `archived`/`pinned` vêm do estado que o whatsmeow guarda (muda no celular, a lista é reenviada).
+  Arquivadas não contam no contador da barra nem notificam (como "Manter conversas arquivadas" do WhatsApp).
 - `message.text` vem cortado em 2000 bytes (`truncated: true`); o texto inteiro sai pelo `history`.
   `muted`: conversa silenciada no celular, não notificar.
 - `kind`: `text`, `image`, `video`, `audio`, `document`, `sticker`, `location`, `contact`, `poll`. Para tipos que

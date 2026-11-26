@@ -23,6 +23,7 @@ local MAX_ROWS = 80
 
 local isOpen = false
 local query = ""
+local viewArchived = false -- showing the archived chats
 local selected = nil
 local confirmLogout = false
 local busy = false
@@ -390,6 +391,7 @@ local function chatRow(c)
           maxLines = 1,
           flexGrow = 1,
         }),
+        ui.glyph({ name = "pin", size = 12, color = "on_surface_variant", visible = c.pinned }),
         ui.label({ text = common.shortTime(c.ts), fontSize = style.font.caption, color = "on_surface_variant" }),
       }),
       ui.row({ gap = style.gap.sm, align = "center" }, bottom),
@@ -400,8 +402,44 @@ end
 local function chatList()
   local rows = {}
   local more = false
+  if not viewArchived and query == "" then
+    local count, unreadArchived = 0, 0
+    for _, c in chats do
+      if c.archived then
+        count += 1
+        unreadArchived += c.unread
+      end
+    end
+    if count > 0 then
+      local right = {}
+      if unreadArchived > 0 then
+        table.insert(right, badge(unreadArchived))
+      end
+      table.insert(rows, ui.row({
+        key = "archived-entry",
+        gap = style.gap.md,
+        padding = style.padding.sm,
+        radius = style.radius.card,
+        align = "center",
+        onClick = function()
+          viewArchived = true
+          render()
+        end,
+      }, {
+        ui.glyph({ name = "archive", size = 18, color = "on_surface_variant" }),
+        ui.label({
+          text = noctalia.tr("panel.list.archived_count", { count = count }),
+          fontSize = style.font.name,
+          fontWeight = "medium",
+          color = "on_surface",
+          flexGrow = 1,
+        }),
+        ui.row({ gap = style.gap.sm, align = "center" }, right),
+      }))
+    end
+  end
   for _, c in chats do
-    if common.matches(c.name, query) then
+    if c.archived == viewArchived and common.matches(c.name, query) then
       if #rows >= MAX_ROWS then
         more = true
         break
@@ -430,7 +468,12 @@ end
 local function listHeader()
   local children = {
     ui.column({ flexGrow = 1, gap = 2 }, {
-      ui.label({ text = noctalia.tr("panel.list.title"), fontSize = style.font.title, fontWeight = "bold", color = "on_surface" }),
+      ui.label({
+        text = noctalia.tr(if viewArchived then "panel.list.archived_title" else "panel.list.title"),
+        fontSize = style.font.title,
+        fontWeight = "bold",
+        color = "on_surface",
+      }),
     }),
     ui.button({
       glyph = "logout",
@@ -443,8 +486,21 @@ local function listHeader()
       end,
     }),
   }
+  if viewArchived then
+    table.insert(children, 1, ui.button({
+      glyph = "arrow-left",
+      variant = "ghost",
+      controlSize = "sm",
+      tooltip = noctalia.tr("panel.list.back"),
+      onClick = function()
+        viewArchived = false
+        render()
+      end,
+    }))
+  end
+  local titleColumn = if viewArchived then children[2] else children[1]
   if status.state ~= "connected" then
-    table.insert(children[1].children, ui.label({
+    table.insert(titleColumn.children, ui.label({
       text = statusText(),
       fontSize = style.font.caption,
       color = if common.isProblem(status.state) then "error" else "on_surface_variant",

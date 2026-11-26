@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -328,6 +329,9 @@ func (d *Daemon) handleEvent(raw any) {
 		}
 	case *events.PushName:
 		d.renameUserChat(ctx, evt.JID, evt.NewPushName, false)
+	case *events.Archive, *events.Pin, *events.Mute:
+		// whatsmeow already stored the new chat settings; resend the list.
+		d.scheduleChats()
 	case *events.MarkChatAsRead:
 		if evt.Action.GetRead() {
 			if _, err := d.store.TakeUnread(ctx, d.chatKey(ctx, evt.JID).String()); err != nil {
@@ -448,16 +452,11 @@ func (d *Daemon) emitMessage(ctx context.Context, msg Message, backlog bool) {
 }
 
 func (d *Daemon) isMuted(ctx context.Context, chat string) bool {
-	c := d.getClient()
 	jid, err := types.ParseJID(chat)
-	if c == nil || c.Store == nil || c.Store.ChatSettings == nil || err != nil {
+	if err != nil {
 		return false
 	}
-	settings, err := c.Store.ChatSettings.GetChatSettings(ctx, jid)
-	if err != nil || !settings.Found {
-		return false
-	}
-	return settings.MutedUntil.After(time.Now())
+	return d.chatSettings(ctx, jid).MutedUntil.After(time.Now())
 }
 
 func (d *Daemon) handleHistory(ctx context.Context, evt *events.HistorySync) {
@@ -597,8 +596,49 @@ func (d *Daemon) scheduleChats() {
 	})
 }
 
-func (d *Daemon) emitChats(ctx context.Context) {
+// chatSettings reads archive/pin/mute state kept by whatsmeow. It may be keyed
+// by the phone JID or the LID, so both are tried.
+func (d *Daemon) chatSettings(ctx context.Context, jid types.JID) types.LocalChatSettings {
+	c := d.getClient()
+	if c == nil || c.Store == nil || c.Store.ChatSettings == nil {
+		return types.LocalChatSettings{}
+	}
+	if s, err := c.Store.ChatSettings.GetChatSettings(ctx, jid); err == nil && s.Found {
+		return s
+	}
+	if jid.Server == types.DefaultUserServer && c.Store.LIDs != nil {
+		if lid, err := c.Store.LIDs.GetLIDForPN(ctx, jid); err == nil && !lid.IsEmpty() {
+			if s, err := c.Store.ChatSettings.GetChatSettings(ctx, lid); err == nil && s.Found {
+				return s
+			}
+		}
+	}
+	return types.LocalChatSettings{}
+}
+
+// chatList returns the stored chats with archive and pin state, pinned first.
+func (d *Daemon) chatList(ctx context.Context) ([]Chat, error) {
 	chats, err := d.store.Chats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range chats {
+		jid, err := types.ParseJID(chats[i].JID)
+		if err != nil {
+			continue
+		}
+		s := d.chatSettings(ctx, jid)
+		chats[i].Archived, chats[i].Pinned = s.Archived, s.Pinned
+	}
+	// Stable: keeps the most-recent-first order inside each group.
+	sort.SliceStable(chats, func(a, b int) bool {
+		return chats[a].Pinned && !chats[b].Pinned
+	})
+	return chats, nil
+}
+
+func (d *Daemon) emitChats(ctx context.Context) {
+	chats, err := d.chatList(ctx)
 	if err != nil {
 		log.Printf("list chats: %v", err)
 		return
@@ -617,7 +657,7 @@ func (d *Daemon) Handle(ctx context.Context, req Request) Response {
 		}
 		return Response{OK: true, Data: data}
 	case "chats":
-		chats, err := d.store.Chats(ctx)
+		chats, err := d.chatList(ctx)
 		if err != nil {
 			return fail(err)
 		}

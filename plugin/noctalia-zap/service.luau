@@ -5,7 +5,8 @@
 
 local common = require("./lib/common.luau")
 
-local MAX_CHATS = 300
+local MAX_CHATS = 300 -- chats published to the panel, not counting archived ones
+local MAX_ARCHIVED = 100
 local MAX_RECENT = 40 -- live messages kept in shared state for the panel
 local WATCHDOG_MS = 10000
 local RESTART_GRACE_MS = 15000
@@ -18,6 +19,7 @@ local failures = 0
 local restartPending = false
 local pendingChats = nil -- chat pages being assembled
 local chatNames = {} -- jid -> name, from the last chat list
+local archivedChats = {} -- jid -> true
 local recent = {} -- last live messages, each with a sequence number
 local seq = 0
 -- Changes on every load, so the panel can tell that seq started over.
@@ -61,14 +63,30 @@ local function onChats(items)
   end
   local chats = {}
   local unread = 0
-  for i, c in items do
+  local kept, keptArchived = 0, 0
+  for _, c in items do
     if type(c) == "table" and type(c.jid) == "string" then
       local n = tonumber(c.unread) or 0
-      unread += n -- counted for every chat, also the ones cut from the list
-      if i > MAX_CHATS then
-        continue
+      local archived = c.archived == true
+      -- Archived chats stay out of the bar count, like WhatsApp with
+      -- "Keep chats archived". Every other chat counts, even past the cut.
+      if not archived then
+        unread += n
+      end
+      if archived then
+        keptArchived += 1
+        if keptArchived > MAX_ARCHIVED then
+          continue
+        end
+      else
+        kept += 1
+        if kept > MAX_CHATS then
+          continue
+        end
       end
       table.insert(chats, {
+        archived = archived,
+        pinned = c.pinned == true,
         jid = c.jid,
         name = c.name or "",
         unread = n,
@@ -78,13 +96,17 @@ local function onChats(items)
       })
     end
   end
-  local names = {}
+  local names, archivedSet = {}, {}
   for _, c in items do
     if type(c) == "table" and type(c.jid) == "string" then
       names[c.jid] = c.name or ""
+      if c.archived == true then
+        archivedSet[c.jid] = true
+      end
     end
   end
   chatNames = names
+  archivedChats = archivedSet
   noctalia.state.set(common.KEY_CHATS, chats)
   noctalia.state.set(common.KEY_UNREAD, unread)
 end
@@ -93,7 +115,7 @@ local function notify(m)
   if noctalia.getConfig("notifications") == false then
     return
   end
-  if m.me or m.backlog or m.muted then
+  if m.me or m.backlog or m.muted or archivedChats[m.chat] then
     return
   end
   if noctalia.state.get(common.KEY_ACTIVE_CHAT) == m.chat then
