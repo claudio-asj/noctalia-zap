@@ -6,7 +6,7 @@ plugins oficiais.
 ## Estrutura do plugin
 
 ```
-plugin/noctalia-zap/
+plugin/zap/
   plugin.toml            manifesto (identidade, entradas, settings)
   service.luau           processo do daemon + estado
   bar.luau               widget da barra
@@ -21,7 +21,7 @@ plugin/noctalia-zap/
 
 ## Manifesto
 
-- `id = "<autor>/noctalia-zap"`, `version` estrito (`1.0.0`, sem sufixo), `plugin_api` = o **menor** número
+- `id = "<autor>/zap"`, `version` estrito (`1.0.0`, sem sufixo), `plugin_api` = o **menor** número
   que cobre o que usamos. Hoje: 56 (botões em notificação). Recursos ≥ 57 ainda não saíram em versão estável.
 - `dependencies = ["noctalia-zapd"]` e o binário citado no README.
 - `icon`, `description` (curta, em inglês) e `tags = ["communication", "panel"]`.
@@ -58,7 +58,7 @@ plugin/noctalia-zap/
 
 ## Antes de dar algo como pronto
 
-1. `noctalia plugins lint plugin/noctalia-zap` sem avisos.
+1. `noctalia plugins lint plugin/zap` sem avisos.
 2. Nenhum erro do plugin em `~/.cache/noctalia/noctalia.log`.
 3. Testado com dois temas (um claro e um escuro) e na barra horizontal.
 4. Nenhuma string literal na UI e nenhum hex fixo (`git grep -nE '"#[0-9a-fA-F]{6}'`).

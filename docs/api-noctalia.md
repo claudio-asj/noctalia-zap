@@ -92,7 +92,7 @@ Cores: sempre por papel (`primary`, `on_surface`, `on_surface_variant`, `outline
 ## Desenvolvimento local
 
 - Pasta: `~/.local/share/noctalia/plugins/<plugin>/`, a fonte de maior precedência. Neste projeto, link
-  simbólico para `plugin/noctalia-zap`.
+  simbólico para `plugin/zap`.
 - Habilitar uma vez em Configurações → Plugins. Os `.luau` recarregam sozinhos.
 - Testes: `noctalia msg panel-toggle <id>:panel`, `noctalia msg plugin <id>:<entrada> all <cmd> ...` e
   `noctalia plugins lint <pasta>`.

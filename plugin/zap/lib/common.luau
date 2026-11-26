@@ -3,7 +3,7 @@
 
 local M = {}
 
-local PLUGIN_ID = "claudio-asj/noctalia-zap"
+local PLUGIN_ID = "claudio-asj/zap"
 local PANELS = {
   compact = "panel_compact",
   normal = "panel",

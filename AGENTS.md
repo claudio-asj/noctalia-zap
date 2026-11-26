@@ -12,7 +12,7 @@ Projeto: cliente de WhatsApp como plugin do Noctalia Shell (niri/Wayland, Arch L
 | Caminho | Conteúdo |
 |---|---|
 | `daemon/` | `noctalia-zapd`: auxiliar em Go + `go.mau.fi/whatsmeow`, protocolo JSON por linha |
-| `plugin/noctalia-zap/` | plugin Noctalia em Luau (service, widget de barra, painel). Toda a interface |
+| `plugin/zap/` | plugin Noctalia em Luau (service, widget de barra, painel). Toda a interface |
 | `docs/arquitetura.md` | desenho do sistema e protocolo daemon ↔ plugin |
 | `docs/api-noctalia.md` | API de plugins: o que existe, gates de `plugin_api` e limitações confirmadas |
 | `docs/design.md` | **padrão visual**: papéis de cor, tamanhos, componentes, telas. Obrigatório para UI |
@@ -40,8 +40,8 @@ Projeto: cliente de WhatsApp como plugin do Noctalia Shell (niri/Wayland, Arch L
   plugin `example/`.
 - Plugins da comunidade: `~/.local/state/noctalia/plugins/sources/community/repo`.
 - Os dois são repositórios git: leia com `git show HEAD:<plugin>/<arquivo>` e busque com `git grep <padrão> HEAD`.
-- Log do shell: `~/.cache/noctalia/noctalia.log`. Lint: `noctalia plugins lint plugin/noctalia-zap`.
-- Desenvolvimento: link `~/.local/share/noctalia/plugins/noctalia-zap -> plugin/noctalia-zap`. Os `.luau`
+- Log do shell: `~/.cache/noctalia/noctalia.log`. Lint: `noctalia plugins lint plugin/zap`.
+- Desenvolvimento: link `~/.local/share/noctalia/plugins/zap -> plugin/zap`. Os `.luau`
   recarregam sozinhos; mudanças no manifesto pedem `noctalia msg config-reload`.
 
 ## Divisão de trabalho (economia)

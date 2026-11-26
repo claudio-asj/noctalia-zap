@@ -2,7 +2,7 @@
 
 ```
 ┌───────────────────────── Noctalia Shell ─────────────────────────┐
-│  plugin noctalia-zap (Luau)                                      │
+│  plugin zap (Luau)                                               │
 │                                                                  │
 │  [[service]] service.luau ──runStream──▶ noctalia-zapd (stdout)   │
 │        │  ▲                                    ▲                 │
@@ -278,6 +278,27 @@ Comandos:
 - Barra de progresso do áudio: o evento `playback` com `state:"playing"` passa a trazer `"started_ms":<unix ms>` e
   `"seconds":<duração>` (do `media.seconds`; se 0, `ffprobe`; se não der, omitido). O plugin desenha `ui.progress`
   com `(agora - started_ms) / seconds` e o tempo decorrido, atualizando 1×/s só enquanto algo toca.
+
+### Modo demonstração
+
+`noctalia-zapd run -demo -data DIR`: nunca cria cliente do whatsmeow, nunca abre `session.db` nem conecta à rede.
+Serve para capturas de tela e para quem revisar o plugin sem conta. O plugin liga com a setting avançada `demo`,
+que roda o daemon com `-data <pluginDataDir>/demo` (a sessão real fica intacta).
+
+- Na partida apaga e recria `DIR/messages.db` e `DIR/media/` com dados fictícios em inglês: ~8 conversas (uma fixada,
+  uma arquivada, um grupo com 3 pessoas, não lidas variadas), cada uma com 5 a 15 mensagens espalhadas nos últimos
+  3 dias. Inclui: resposta citada, reações, mensagem editada, apagada, `ack` sent/delivered/read nas minhas, uma
+  foto (miniatura gerada no código, gradiente com formas simples), um áudio de voz (`seconds`), um documento PDF
+  (nome e tamanho), uma figurinha (PNG gerado). Fotos de perfil geradas (círculo de cor sólida) para metade das
+  conversas.
+- Emite `status connected` logo depois do `chats`.
+- `send` acrescenta a mensagem e emite `message` com `ack:"sent"`, e depois `receipt` delivered (1 s) e read (3 s);
+  4 s depois chega uma resposta fictícia curta da outra pessoa (`message`), precedida de `typing` composing por 2 s.
+- `react`, `read`, `history` (com `--before`), `chats`, `status`, `avatar`, `backfill` (responde `requested:false`),
+  `presence`, `typing`, `quit` funcionam sobre os dados locais. `media` devolve o arquivo gerado; `play` emite
+  `playback` playing (com `started_ms`/`seconds`) e `stopped` ao fim, sem tocar som. `login`/`logout`, `pick`,
+  `paste`, `record` e `send --media` respondem erro `demo`.
+- Nada de rede, nada de whatsmeow nessa rota (garantido por teste: o modo demo não referencia o container).
 
 ## Plugin (Luau)
 

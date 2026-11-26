@@ -190,7 +190,7 @@ end
 local function onLine(line: string)
   local event = noctalia.json.decode(line)
   if type(event) ~= "table" then
-    noctalia.log(`noctalia-zap: dropped an undecodable event ({#line} bytes)`)
+    noctalia.log(`zap: dropped an undecodable event ({#line} bytes)`)
     return
   end
   if event.type == "status" then
@@ -297,7 +297,7 @@ local function startDaemon()
     return
   end
   if dataDir == nil then
-    noctalia.log("noctalia-zap: no data dir: " .. tostring(dataError))
+    noctalia.log("zap: no data dir: " .. tostring(dataError))
     setStatus("error", "data_dir")
     return
   end

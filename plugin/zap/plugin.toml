@@ -1,5 +1,5 @@
-id = "claudio-asj/noctalia-zap"
-name = "Noctalia Zap"
+id = "claudio-asj/zap"
+name = "Zap"
 version = "0.1.0"
 plugin_api = 56
 author = "claudio-asj"

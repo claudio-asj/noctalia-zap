@@ -8,7 +8,7 @@ A WhatsApp client that lives in the Noctalia bar. The plugin draws the whole int
 
 ```
 daemon/                 noctalia-zapd (Go + whatsmeow)
-plugin/noctalia-zap/    Noctalia plugin (Luau)
+plugin/zap/             Noctalia plugin (Luau), id claudio-asj/zap
 docs/                   architecture, API notes, roadmap (Portuguese)
 ```
 
