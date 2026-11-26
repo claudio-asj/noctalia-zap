@@ -95,6 +95,9 @@ evento `message` quanto no `history`:
           "mime":"image/jpeg","ptt":false,"file":"/abs/media/<h>.jpg"}
 ```
 
+- Figurinha com som: chega embrulhada em `AudioStickerMessage` (o whatsmeow não desembrulha; o daemon sim) e o
+  `StickerMessage` traz um `AudioMessage`. `media.sound: true` e `media.seconds`. `play` numa figurinha toca o
+  som (baixado para o cache como `<h de id+"#sound">`), não a imagem.
 - Todos os campos são opcionais. `thumb` só existe se a mensagem trouxe prévia (`JPEGThumbnail`; figurinha:
   `PngThumbnail` em `.png`) e o arquivo foi gravado. `file` só existe se a mídia já foi baixada para o cache.
 - `<h>` = os primeiros 32 caracteres hex de `sha256(chat + "|" + id)`. Diretório `media/` 0700 dentro do

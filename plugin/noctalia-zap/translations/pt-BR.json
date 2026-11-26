@@ -100,7 +100,8 @@
       "offline": "Conecte para baixar.",
       "no_player": "Instale o mpv para tocar áudios.",
       "failed": "Não deu para baixar.",
-      "not_stored": "Esta mídia foi guardada antes do suporte a downloads. Abra pelo celular."
+      "not_stored": "Esta mídia foi guardada antes do suporte a downloads. Abra pelo celular.",
+      "play_sound": "Tocar som"
     }
   },
   "settings": {

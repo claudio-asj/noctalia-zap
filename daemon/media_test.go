@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestMigrationOldDatabase(t *testing.T) {
@@ -201,5 +204,22 @@ func TestParseCtlMedia(t *testing.T) {
 		if _, err := parseCtlArgs(bad); err == nil {
 			t.Errorf("%v should fail", bad)
 		}
+	}
+}
+
+func TestStickerWithSound(t *testing.T) {
+	msg := &waE2E.Message{StickerMessage: &waE2E.StickerMessage{
+		Mimetype: proto.String("image/webp"),
+		Audio: &waE2E.StickerMessage_AudioMessage{AudioMessage: &waE2E.AudioMessage{
+			Seconds: proto.Uint32(3), Mimetype: proto.String("audio/ogg"),
+		}},
+	}}
+	p := extractMedia(msg)
+	if p == nil || !p.Info.Sound || p.Info.Seconds != 3 {
+		t.Fatalf("sticker with sound not detected: %+v", p)
+	}
+	wrapped := &waE2E.Message{AudioStickerMessage: &waE2E.FutureProofMessage{Message: msg}}
+	if _, kind := extractContent(wrapped.GetAudioStickerMessage().GetMessage()); kind != KindSticker {
+		t.Fatalf("unwrapped kind = %q", kind)
 	}
 }

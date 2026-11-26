@@ -751,13 +751,38 @@ local function stickerBubble(m, key: string, showSender: boolean)
       maxLines = 1,
     }))
   end
-  table.insert(children, ui.image({
+  local image = ui.image({
     key = "sticker-" .. m.id,
     path = m.media.thumb,
     width = style.sticker,
     height = style.sticker,
     fit = "contain",
-  }))
+  })
+  if m.media.sound then
+    -- Sticker with sound: a play button beside it.
+    local playing = isPlaying(m)
+    local controls = {
+      ui.button({
+        glyph = if playing then "player-stop" else "volume",
+        variant = "ghost",
+        controlSize = "sm",
+        enabled = not mediaBusy[m.id],
+        tooltip = noctalia.tr(if playing then "panel.media.stop" else "panel.media.play_sound"),
+        onClick = function()
+          toggleAudio(m)
+        end,
+      }),
+    }
+    if mine then
+      image = ui.row({ gap = style.gap.xs, align = "center" }, { controls[1], image })
+    else
+      image = ui.row({ gap = style.gap.xs, align = "center" }, { image, controls[1] })
+    end
+  end
+  table.insert(children, image)
+  if mediaError[m.id] then
+    table.insert(children, ui.label({ text = noctalia.tr(mediaError[m.id]), fontSize = style.font.caption, color = "error" }))
+  end
   table.insert(children, ui.label({
     text = noctalia.formatTime("%H:%M", m.ts),
     fontSize = style.font.caption,

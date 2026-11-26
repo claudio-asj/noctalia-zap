@@ -30,6 +30,7 @@ type MediaInfo struct {
 	Size    int64  `json:"size,omitempty"`
 	Mime    string `json:"mime,omitempty"`
 	PTT     bool   `json:"ptt,omitempty"`
+	Sound   bool   `json:"sound,omitempty"` // sticker with sound
 	File    string `json:"file,omitempty"`
 }
 
@@ -91,6 +92,10 @@ func extractMedia(m *waE2E.Message) *mediaPayload {
 		p.Thumb = x.GetPngThumbnail()
 		x.PngThumbnail = nil
 		p.Info = MediaInfo{W: int(x.GetWidth()), H: int(x.GetHeight()), Size: int64(x.GetFileLength()), Mime: x.GetMimetype()}
+		if a := x.GetAudioMessage(); a != nil {
+			p.Info.Sound = true
+			p.Info.Seconds = int(a.GetSeconds())
+		}
 		out.StickerMessage = x
 	default:
 		return nil

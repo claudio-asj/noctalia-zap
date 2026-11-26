@@ -100,7 +100,8 @@
       "offline": "Connect to download.",
       "no_player": "Install mpv to play audio.",
       "failed": "Could not download.",
-      "not_stored": "This media was saved before downloads were supported. Open it on the phone."
+      "not_stored": "This media was saved before downloads were supported. Open it on the phone.",
+      "play_sound": "Play sound"
     }
   },
   "settings": {

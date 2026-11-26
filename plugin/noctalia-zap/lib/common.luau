@@ -83,6 +83,7 @@ function M.copyMedia(media): any
     size = tonumber(media.size) or 0,
     mime = if type(media.mime) == "string" then media.mime else "",
     ptt = media.ptt == true,
+    sound = media.sound == true,
   }
 end
 

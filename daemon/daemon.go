@@ -396,6 +396,10 @@ func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bo
 		return
 	}
 	chat := d.chatKey(ctx, evt.Info.Chat)
+	// whatsmeow unwraps Lottie stickers but not stickers with sound.
+	if inner := evt.Message.GetAudioStickerMessage().GetMessage(); inner != nil {
+		evt.Message = inner
+	}
 	text, kind := extractContent(evt.Message)
 	if kind == "" {
 		return

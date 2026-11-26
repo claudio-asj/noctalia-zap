@@ -101,6 +101,56 @@ func (d *Daemon) ensureMedia(ctx context.Context, chat, id string) (string, erro
 	return path, nil
 }
 
+// ensurePlayable returns a file the player can play: the media itself, or the
+// sound of a sticker with sound (cached like audio messages).
+func (d *Daemon) ensurePlayable(ctx context.Context, chat, id string) (string, error) {
+	ref, found, err := d.store.MediaRef(ctx, chat, id)
+	if err != nil {
+		return "", errors.New("internal error")
+	}
+	if !found || ref.Kind != KindSticker {
+		return d.ensureMedia(ctx, chat, id)
+	}
+	if len(ref.Raw) == 0 {
+		return "", errors.New("not_stored")
+	}
+	var msg waE2E.Message
+	if err := proto.Unmarshal(ref.Raw, &msg); err != nil {
+		return "", errors.New("media_unavailable")
+	}
+	sound := msg.GetStickerMessage().GetAudioMessage()
+	if sound == nil {
+		return "", errors.New("not_media")
+	}
+	soundID := id + "#sound"
+	path := cacheFilePath(d.cfg.DataDir, chat, soundID, sound.GetMimetype())
+	if fileExists(path) {
+		return path, nil
+	}
+	c, _, err := d.connectedClient()
+	if err != nil {
+		return "", err
+	}
+	dctx, cancel := context.WithTimeout(ctx, downloadTimeout)
+	defer cancel()
+	data, err := c.Download(dctx, sound)
+	if err != nil {
+		if errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith404) || errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith410) {
+			return "", errors.New("media_unavailable")
+		}
+		log.Printf("sticker sound download failed: %v", err)
+		return "", errors.New("download failed")
+	}
+	path, err = d.saveCache(chat, soundID, sound.GetMimetype(), data)
+	if err != nil {
+		return "", errors.New("save failed")
+	}
+	if err := pruneCache(mediaDir(d.cfg.DataDir), int64(d.cfg.MediaCacheMB)<<20, path); err != nil {
+		log.Printf("media: prune: %v", err)
+	}
+	return path, nil
+}
+
 func (d *Daemon) saveCache(chat, id, mimeType string, data []byte) (string, error) {
 	if err := os.MkdirAll(mediaDir(d.cfg.DataDir), 0o700); err != nil {
 		return "", err
@@ -142,7 +192,7 @@ func (d *Daemon) cmdPlay(ctx context.Context, req Request) Response {
 	if playerArgv("") == nil {
 		return Response{Error: "no_player"}
 	}
-	path, err := d.ensureMedia(ctx, jid.String(), req.ID)
+	path, err := d.ensurePlayable(ctx, jid.String(), req.ID)
 	if err != nil {
 		return fail(err)
 	}
