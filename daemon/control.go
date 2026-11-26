@@ -19,6 +19,9 @@ import (
 
 // Request is one command sent over the control socket, one JSON object per line.
 type Request struct {
+	// File is only used by the ctl client: the text is read from it and the
+	// file is removed. It is never sent to the daemon.
+	File  string `json:"-"`
 	Cmd   string `json:"cmd"`
 	Chat  string `json:"chat,omitempty"`
 	Text  string `json:"text,omitempty"`
@@ -149,6 +152,14 @@ func safeHandle(ctx context.Context, h Handler, req Request) (resp Response) {
 // argv, sends it to the running daemon and prints the JSON response to stdout.
 func runCtl(socket string, args []string) int {
 	req, err := parseCtlArgs(args)
+	if err == nil && req.Cmd == "send" && req.File != "" {
+		// The plugin writes the text to a private file so it never shows up in
+		// the process list; the file is consumed here.
+		var b []byte
+		b, err = os.ReadFile(req.File)
+		_ = os.Remove(req.File)
+		req.Text = string(b)
+	}
 	if err == nil && req.Cmd == "send" && req.Text == "-" {
 		// Read the text from stdin so it does not show up in the process list.
 		var b []byte
@@ -189,6 +200,7 @@ const ctlUsage = `commands:
   chats
   history <chat-jid> [limit]
   send <chat-jid> <text>     (use "-" as text to read it from stdin)
+  send <chat-jid> --file <path>  (text read from the file, which is then removed)
   read <chat-jid>
   login
   logout
@@ -223,10 +235,14 @@ func parseCtlArgs(args []string) (Request, error) {
 			req.Limit = n
 		}
 	case "send":
-		if len(rest) != 2 {
-			return req, errors.New("usage: send <chat-jid> <text> (quote the text)")
+		switch {
+		case len(rest) == 2:
+			req.Chat, req.Text = rest[0], rest[1]
+		case len(rest) == 3 && rest[1] == "--file":
+			req.Chat, req.File = rest[0], rest[2]
+		default:
+			return req, errors.New("usage: send <chat-jid> <text> | send <chat-jid> - | send <chat-jid> --file <path>")
 		}
-		req.Chat, req.Text = rest[0], rest[1]
 	default:
 		return req, fmt.Errorf("unknown command %q", req.Cmd)
 	}

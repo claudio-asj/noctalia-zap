@@ -45,12 +45,15 @@ Eventos (daemon → plugin, stdout):
 ```json
 {"type":"status","state":"connecting|qr|connected|logged_out|error","detail":"..."}
 {"type":"qr","png":"/abs/path/qr.png"}
-{"type":"chats","items":[{"jid":"...","name":"...","unread":2,"last":"...","last_kind":"text","ts":1700000000}]}
-{"type":"message","id":"...","chat":"jid","from":"jid","name":"...","text":"...","kind":"text","ts":1700000000,"me":false,"backlog":false}
-{"type":"history","chat":"jid","items":[/* mensagens no formato acima, sem "type", da mais antiga à mais nova */]}
+{"type":"chats","page":0,"pages":3,"items":[{"jid":"...","name":"...","unread":2,"last":"...","last_kind":"text","ts":1700000000}]}
+{"type":"message","id":"...","chat":"jid","from":"jid","name":"...","text":"...","kind":"text","ts":1700000000,"me":false,"backlog":false,"truncated":false,"muted":false}
 ```
 
-- `chats` sai na partida, ao conectar e (com debounce de 300 ms) depois de qualquer mudança. É a lista completa.
+- Cada linha fica abaixo de ~8 KB, porque o `runStream` do Noctalia quebra linhas longas.
+- `chats` sai na partida, ao conectar e (com debounce de 300 ms) depois de qualquer mudança. É a lista completa,
+  em páginas: a página 0 recomeça a lista e a última (`page == pages-1`) fecha. `last` vem cortado em 200 bytes.
+- `message.text` vem cortado em 2000 bytes (`truncated: true`); o texto inteiro sai pelo `history`.
+  `muted`: conversa silenciada no celular, não notificar.
 - `kind`: `text`, `image`, `video`, `audio`, `document`, `sticker`, `location`, `contact`, `poll`. Para tipos que
   não são texto, `text` traz a legenda/nome do arquivo (pode vir vazio); o plugin traduz o rótulo.
 - `detail` do status: `reconnecting`, `keepalive_timeout`, `paired`, `qr_timeout`, `pair_failed`,
@@ -66,19 +69,19 @@ Comandos (plugin → daemon, socket; uma linha JSON de ida e uma de volta):
 
 ```json
 {"cmd":"send","chat":"jid","text":"..."}      → {"ok":true,"data":{"id":"...","ts":1700000000}}
-{"cmd":"history","chat":"jid","limit":50}      → {"ok":true,"data":[mensagens]}
+{"cmd":"history","chat":"jid","limit":50}      → {"ok":true,"data":[mensagens, da mais antiga à mais nova]}
 {"cmd":"read","chat":"jid"}                    → {"ok":true}  (erro "not connected" sem conexão; nada é zerado)
 {"cmd":"login"}                                → {"ok":true,"data":{"action":"pairing|reconnect"}}
 {"cmd":"logout"}                               → {"ok":true,"data":{"remote":false}}  (false: remover no celular)
 {"cmd":"chats"} {"cmd":"status"} {"cmd":"quit"}
 ```
 
-Erro: `{"ok":false,"error":"..."}` e o `ctl` sai com código 1. `send` e `read` também emitem os eventos
-correspondentes no stdout, então o service não precisa tratar a resposta além do erro.
+Erro: `{"ok":false,"error":"..."}` e o `ctl` sai com código 1. `send` também emite o evento `message` e o `read`
+atualiza `chats` no stdout, então o service não precisa tratar a resposta além do erro.
 
-Limitação conhecida: o `runAsync` não tem stdin, então o plugin passa o texto de `send` no argv, que fica visível em
-`/proc/<pid>/cmdline` enquanto o `ctl` roda (milissegundos). No terminal, use `ctl send <jid> -` para ler do stdin.
-Se isso incomodar, a saída é o plugin gravar o texto num arquivo 0600 em `pluginDataDir()` e passar o caminho.
+Texto do `send` fora do argv: o `runAsync` não tem stdin, então o plugin grava o texto num arquivo dentro de
+`pluginDataDir()` (diretório 0700) e chama `ctl send <jid> --file <caminho>`. O `ctl` lê e apaga o arquivo. No
+terminal, `ctl send <jid> -` lê do stdin.
 
 ## Plugin (Luau)
 

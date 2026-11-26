@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -124,5 +127,50 @@ func TestParseCtlArgs(t *testing.T) {
 		if _, err := parseCtlArgs(bad); err == nil {
 			t.Errorf("expected error for %v", bad)
 		}
+	}
+}
+
+func TestChatPagesAndClip(t *testing.T) {
+	if s, cut := clip("ação", 2); s != "a" || !cut {
+		t.Fatalf("clip = %q, %v", s, cut)
+	}
+	if s, cut := clip("abc", 10); s != "abc" || cut {
+		t.Fatalf("clip = %q, %v", s, cut)
+	}
+	if pages := chatPages(nil); len(pages) != 1 || pages[0].(ChatsEvent).Pages != 1 {
+		t.Fatalf("empty list must give one empty page: %v", pages)
+	}
+	var chats []Chat
+	long := strings.Repeat("x", 5000)
+	for i := 0; i < 400; i++ {
+		chats = append(chats, Chat{JID: fmt.Sprintf("%d@s.whatsapp.net", i), Name: "name", Last: long})
+	}
+	pages := chatPages(chats)
+	total := 0
+	for i, p := range pages {
+		ev := p.(ChatsEvent)
+		b, _ := json.Marshal(ev)
+		if len(b) > maxPageBytes+1024 {
+			t.Fatalf("page %d too big: %d bytes", i, len(b))
+		}
+		if ev.Page != i || ev.Pages != len(pages) {
+			t.Fatalf("bad page numbering %d/%d", ev.Page, ev.Pages)
+		}
+		for _, c := range ev.Items {
+			if len(c.Last) > maxPreviewText {
+				t.Fatal("preview not clipped")
+			}
+		}
+		total += len(ev.Items)
+	}
+	if total != 400 {
+		t.Fatalf("lost chats: %d", total)
+	}
+}
+
+func TestParseCtlSendFile(t *testing.T) {
+	req, err := parseCtlArgs([]string{"send", "1@s.whatsapp.net", "--file", "/tmp/x"})
+	if err != nil || req.File != "/tmp/x" || req.Text != "" {
+		t.Fatalf("send --file = %+v, %v", req, err)
 	}
 }

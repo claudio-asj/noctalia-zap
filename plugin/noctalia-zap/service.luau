@@ -14,6 +14,7 @@ local binary = nil
 local lastStart = 0
 local failures = 0
 local restartPending = false
+local pendingChats = nil -- chat pages being assembled
 
 local function shellQuote(value: string): string
   return "'" .. string.gsub(value, "'", "'\\''") .. "'"
@@ -76,6 +77,7 @@ end
 local function onLine(line: string)
   local event = noctalia.json.decode(line)
   if type(event) ~= "table" then
+    noctalia.log(`noctalia-zap: dropped an undecodable event ({#line} bytes)`)
     return
   end
   if event.type == "status" then
@@ -89,7 +91,22 @@ local function onLine(line: string)
   elseif event.type == "qr" then
     noctalia.state.set(common.KEY_QR, event.png)
   elseif event.type == "chats" then
-    onChats(event.items)
+    -- The list arrives in pages (long lines get split by the host). Publish it
+    -- once the last page is in.
+    local page = tonumber(event.page) or 0
+    local pages = tonumber(event.pages) or 1
+    if page == 0 then
+      pendingChats = {}
+    end
+    if pendingChats ~= nil and type(event.items) == "table" then
+      for _, c in event.items do
+        table.insert(pendingChats, c)
+      end
+    end
+    if page >= pages - 1 and pendingChats ~= nil then
+      onChats(pendingChats)
+      pendingChats = nil
+    end
   end
   -- "message" and "history" are handled by the conversation view (phase 3).
 end

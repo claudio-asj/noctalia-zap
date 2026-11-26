@@ -423,8 +423,29 @@ func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bo
 	if time.Since(evt.Info.Timestamp) > backlogAge {
 		backlog = true
 	}
-	d.emit.Emit(MessageEvent{Type: "message", Message: msg, Backlog: backlog})
+	d.emitMessage(ctx, msg, backlog)
 	d.scheduleChats()
+}
+
+// emitMessage announces a new message, with the text cut to keep the line short.
+func (d *Daemon) emitMessage(ctx context.Context, msg Message, backlog bool) {
+	ev := MessageEvent{Type: "message", Message: msg, Backlog: backlog}
+	ev.Text, ev.Truncated = clip(msg.Text, maxEventText)
+	ev.Muted = d.isMuted(ctx, msg.Chat)
+	d.emit.Emit(ev)
+}
+
+func (d *Daemon) isMuted(ctx context.Context, chat string) bool {
+	c := d.getClient()
+	jid, err := types.ParseJID(chat)
+	if c == nil || c.Store == nil || c.Store.ChatSettings == nil || err != nil {
+		return false
+	}
+	settings, err := c.Store.ChatSettings.GetChatSettings(ctx, jid)
+	if err != nil || !settings.Found {
+		return false
+	}
+	return settings.MutedUntil.After(time.Now())
 }
 
 func (d *Daemon) handleHistory(ctx context.Context, evt *events.HistorySync) {
@@ -570,7 +591,7 @@ func (d *Daemon) emitChats(ctx context.Context) {
 		log.Printf("list chats: %v", err)
 		return
 	}
-	d.emit.Emit(ChatsEvent{Type: "chats", Items: chats})
+	d.emit.EmitAll(chatPages(chats))
 }
 
 // Handle executes a control request.
@@ -631,7 +652,6 @@ func (d *Daemon) cmdHistory(ctx context.Context, req Request) Response {
 	if err != nil {
 		return fail(err)
 	}
-	d.emit.Emit(HistoryEvent{Type: "history", Chat: jid.String(), Items: msgs})
 	return Response{OK: true, Data: msgs}
 }
 
@@ -679,7 +699,7 @@ func (d *Daemon) cmdSend(ctx context.Context, req Request) Response {
 		log.Printf("store sent message: %v", err)
 	}
 	d.ensureChatName(ctx, jid, "")
-	d.emit.Emit(MessageEvent{Type: "message", Message: msg})
+	d.emitMessage(ctx, msg, false)
 	d.scheduleChats()
 	return Response{OK: true, Data: map[string]any{"id": resp.ID, "ts": msg.TS}}
 }

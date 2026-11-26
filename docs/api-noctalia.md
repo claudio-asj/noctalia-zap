@@ -12,6 +12,8 @@ workflow), lidas em 2026-11-25, e plugins da comunidade. Noctalia instalado: 5.6
   Também não avisa quando o processo sai e **só aceita string de shell** (`runAsync` aceita argv). Use `exec` e
   aspas simples escapadas em cada caminho (padrão do `androidconnect`), e um watchdog no `update()` para saber se
   o processo morreu.
+- **`runStream` quebra linhas longas** (confirmado: uma linha de 98 KB chegou em pedaços de ~28 KB, JSON
+  inválido). Mantenha cada evento abaixo de ~8 KB: o daemon pagina a lista de conversas e corta textos longos.
 - Não há API para focar janelas. Use `niri msg action ...` via `runAsync`.
 - Painéis não renderizam web. `ui.image` só aceita arquivo local.
 

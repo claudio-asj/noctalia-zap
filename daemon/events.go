@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"sync"
+	"unicode/utf8"
 )
 
 // Event types written to stdout, one JSON object per line.
@@ -28,8 +29,13 @@ type Chat struct {
 	TS       int64  `json:"ts"`
 }
 
+// ChatsEvent carries one page of the full chat list. The plugin's line reader
+// splits long lines, so the list is sent in pages of a few KiB; the plugin
+// replaces its list once page == pages-1 arrives.
 type ChatsEvent struct {
 	Type  string `json:"type"` // "chats"
+	Page  int    `json:"page"`
+	Pages int    `json:"pages"`
 	Items []Chat `json:"items"`
 }
 
@@ -50,12 +56,11 @@ type MessageEvent struct {
 	// Backlog marks messages delivered late (offline sync, old timestamps);
 	// the plugin should not notify for them.
 	Backlog bool `json:"backlog,omitempty"`
-}
-
-type HistoryEvent struct {
-	Type  string    `json:"type"` // "history"
-	Chat  string    `json:"chat"`
-	Items []Message `json:"items"`
+	// Truncated means Text was cut to keep the line short; the full text
+	// comes from the history command.
+	Truncated bool `json:"truncated,omitempty"`
+	// Muted is true when the chat is muted on the phone.
+	Muted bool `json:"muted,omitempty"`
 }
 
 // Status states.
@@ -85,6 +90,59 @@ func (e *Emitter) Emit(v any) {
 	defer e.mu.Unlock()
 	// Encode appends a newline. Write errors (closed stdout) are not recoverable here.
 	_ = e.enc.Encode(v)
+}
+
+// EmitAll writes several events with no other event in between.
+func (e *Emitter) EmitAll(vs []any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, v := range vs {
+		_ = e.enc.Encode(v)
+	}
+}
+
+// Line size limits: the plugin host splits lines that are too long.
+const (
+	maxEventText   = 2000
+	maxPreviewText = 200
+	maxPageBytes   = 8000
+)
+
+// clip cuts s to at most n bytes without splitting a UTF-8 character.
+func clip(s string, n int) (string, bool) {
+	if len(s) <= n {
+		return s, false
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n], true
+}
+
+// chatPages splits the chat list into events that each stay under maxPageBytes.
+func chatPages(chats []Chat) []any {
+	var pages [][]Chat
+	var cur []Chat
+	size := 0
+	for _, c := range chats {
+		c.Last, _ = clip(c.Last, maxPreviewText)
+		b, _ := json.Marshal(c)
+		if len(cur) > 0 && size+len(b) > maxPageBytes {
+			pages = append(pages, cur)
+			cur, size = nil, 0
+		}
+		cur = append(cur, c)
+		size += len(b) + 1
+	}
+	pages = append(pages, cur) // always at least one page, possibly empty
+	out := make([]any, len(pages))
+	for i, p := range pages {
+		if p == nil {
+			p = []Chat{}
+		}
+		out[i] = ChatsEvent{Type: "chats", Page: i, Pages: len(pages), Items: p}
+	}
+	return out
 }
 
 func (e *Emitter) Status(state, detail string) {
