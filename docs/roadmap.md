@@ -20,5 +20,39 @@ Estrutura, AGENTS.md (agnóstico de ferramenta), papéis de agentes, arquitetura
 - [x] Marcar como lida; notificação com botão "Responder"
 - **Pronto quando:** abrir conversa, enviar e receber notificação pelo painel ✅ (testado em 2026-11-26)
 
-## Depois
-Mídia (imagens, áudio), grupos, figurinhas, busca, múltiplas contas.
+## Fase 4: Mídia recebida
+- [ ] Miniatura de foto e vídeo na hora (prévia que vem dentro da mensagem)
+- [ ] `ctl media`: baixar e descriptografar para o cache em `pluginDataDir`; clique abre no app padrão
+- [ ] Áudio e voz com tocar/parar (o daemon controla o `mpv`) e duração
+- [ ] Documentos e figurinhas: baixar e abrir
+- [ ] Cache com limite configurável e limpeza automática
+- **Pronto quando:** ver miniatura, abrir foto em tamanho real e ouvir um áudio pelo painel
+
+## Fase 5: Contatos e fotos
+- [ ] Nomes para as conversas que só mostram telefone (push name, sincronização de contatos)
+- [ ] Foto de perfil no avatar (cache)
+- [ ] Nome colorido de quem escreveu nos grupos
+
+## Fase 6: Conversa completa
+- [ ] Respostas citadas e responder a uma mensagem
+- [ ] Reações; mensagens editadas e apagadas
+- [ ] Status de entrega (enviado, entregue, lido) e "digitando…"
+- [ ] Carregar mensagens antigas ao rolar para cima
+
+## Fase 7: Enviar mídia
+- [ ] Colar imagem da área de transferência
+- [ ] Anexar arquivo (portal ou zenity, a confirmar)
+- [ ] Gravar áudio (`pw-record`)
+
+## Fase 8: Busca e atalhos
+- [ ] Busca no texto das mensagens (SQLite FTS5, local)
+- [ ] Atalhos: Ctrl+F, Esc, setas
+- [ ] Arquivar, silenciar e fixar pelo painel
+
+## Fase 9: Publicação
+- [ ] README com capturas, thumbnail e descrição
+- [ ] Binário do daemon nos releases e pacote no AUR
+- [ ] Envio para a loja de plugins da comunidade
+
+## Fora de escopo
+Múltiplas contas (custo alto, pouco uso) e chamadas (o whatsmeow não suporta).
