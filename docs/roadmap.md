@@ -60,10 +60,14 @@ Estrutura, AGENTS.md (agnóstico de ferramenta), papéis de agentes, arquitetura
 - [ ] Atalhos: Ctrl+F, Esc, setas
 - [ ] Arquivar, silenciar e fixar pelo painel
 
-## Fase 9: Publicação
-- [ ] README com capturas, thumbnail e descrição
-- [ ] Binário do daemon nos releases e pacote no AUR
-- [ ] Envio para a loja de plugins da comunidade
+## Fase 9: Publicação (versão inicial 0.1.0)
+- [x] Plugin renomeado para `claudio-asj/zap` (a loja não aceita "noctalia" no nome)
+- [x] Modo demonstração (dados fictícios, sem WhatsApp) para capturas e revisores
+- [x] README da loja em inglês, capturas e thumbnail
+- [x] Repositório público, LICENSE MIT e release v0.1.0 com o binário
+- [x] PR na loja da comunidade (rascunho): https://github.com/noctalia-dev/community-plugins/pull/1614
+- [ ] Refazer o thumbnail no gerador oficial, revisar a tradução pt-BR e marcar o PR como pronto
+- [ ] Pacote no AUR
 
 ## Fora de escopo
 Múltiplas contas (custo alto, pouco uso) e chamadas (o whatsmeow não suporta).

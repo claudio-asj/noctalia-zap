@@ -5,7 +5,7 @@ Cursor, Copilot, Aider...). `CLAUDE.md` e `GEMINI.md` são links simbólicos par
 paralelas em arquivos específicos de uma ferramenta; edite este.
 
 Projeto: cliente de WhatsApp como plugin do Noctalia Shell (niri/Wayland, Arch Linux). Projeto pessoal.
-**Status: fases 1 a 7 prontas e testadas (inclui enviar mídia). Próximo: fase 8 (busca e atalhos).** Ver `docs/roadmap.md`.
+**Status: 0.1.0 publicado (repo público, release, PR da loja em rascunho). Próximo: concluir o PR da loja; depois fase 8.** Ver `docs/roadmap.md`.
 
 ## Mapa
 
