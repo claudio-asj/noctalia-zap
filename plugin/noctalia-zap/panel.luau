@@ -29,6 +29,8 @@ local MAX_ROWS = 80
 local isOpen = false
 local query = ""
 local viewArchived = false -- showing the archived chats
+local searchRev = 0 -- bumping it gives the search input a new key, which empties it
+local listReveal = nil -- chat to scroll the list to, cleared after one render
 local selected = nil
 local confirmLogout = false
 local busy = false
@@ -781,6 +783,12 @@ local function chatRow(c)
     align = "center",
     fill = fill,
     onClick = function()
+      if query ~= "" then
+        -- Picked from a search: clear it and show the chat in the full list.
+        query = ""
+        searchRev += 1
+        listReveal = c.jid
+      end
       selectChat(c.jid)
     end,
   }, {
@@ -851,6 +859,20 @@ local function chatList()
       table.insert(rows, chatRow(c))
     end
   end
+  -- The open chat always has its row, even past the drawn limit.
+  if more and selected ~= nil then
+    local drawn = false
+    for _, row in rows do
+      if row.props and row.props.key == selected then
+        drawn = true
+        break
+      end
+    end
+    local c = if drawn then nil else chatByJid(selected)
+    if c and c.archived == viewArchived and common.matches(c.name, query) then
+      table.insert(rows, chatRow(c))
+    end
+  end
   if #rows == 0 then
     local text = if query ~= "" then noctalia.tr("panel.list.no_match") else noctalia.tr("panel.list.empty")
     return ui.column({ flexGrow = 1, align = "center", justify = "center" }, {
@@ -866,7 +888,9 @@ local function chatList()
       textAlign = "center",
     }))
   end
-  return ui.scroll({ flexGrow = 1, gap = style.gap.xs }, rows)
+  local reveal = listReveal
+  listReveal = nil -- the host only acts when the key changes
+  return ui.scroll({ flexGrow = 1, gap = style.gap.xs, revealKey = reveal }, rows)
 end
 
 local function listHeader()
@@ -1534,7 +1558,7 @@ local function mainScreen()
   local left = {
     listHeader(),
     ui.input({
-      key = "search",
+      key = "search-" .. searchRev,
       placeholder = noctalia.tr("panel.list.search"),
       onChange = function(text)
         query = text
