@@ -153,6 +153,71 @@ Comandos novos:
   antigos (mtime) de `media/` (não `media/thumbs/`) até caber, nunca o que acabou de baixar. Logout apaga `media/`
   inteiro, mas nunca a pasta de downloads do usuário.
 
+### Conversa completa (fase 6)
+
+Campos novos opcionais nas mensagens (evento `message` e `history`), todos com `omitempty`:
+
+```json
+{"id":"...", "...": "...",
+ "quote": {"id":"msgid","from":"jid","name":"...","text":"...","kind":"text"},
+ "reactions": [{"emoji":"👍","count":2,"me":true}],
+ "edited": true,
+ "deleted": true,
+ "ack": "sent|delivered|read"}
+```
+
+- `quote`: a mensagem respondida (`ContextInfo.StanzaID`, `Participant`, `QuotedMessage`). `text` cortado em 200
+  bytes; `kind` como nas mensagens; `name` resolvido como o nome de quem mandou (ou vazio se fui eu). Guardado em
+  colunas próprias (`quote_id`, `quote_from`, `quote_text`, `quote_kind`).
+- `reactions`: agregadas por emoji, na ordem da primeira reação. `me`: eu reagi com esse emoji. Tabela
+  `reactions(chat, msg_id, sender, emoji, ts)`, PK `(chat, msg_id, sender)`; emoji vazio remove. Uma pessoa tem no
+  máximo uma reação por mensagem (a nova substitui).
+- `edited`: o texto foi editado (o daemon troca `text` pelo novo e marca a coluna `edited`).
+- `deleted`: apagada para todos (`ProtocolMessage` REVOKE). O daemon limpa `text`, `raw`, `media`, `quote` e marca
+  `deleted`; `kind` continua o original.
+- `ack` só em mensagens minhas: `sent` (o servidor aceitou), `delivered`, `read` (recibos `events.Receipt`; `played`
+  conta como `read`). Em grupo: entregue/lido quando qualquer participante entregar/ler. Coluna `ack` (0..3).
+
+Eventos novos:
+
+```json
+{"type":"update","message":{...mensagem completa, mesmo formato do history...}}
+{"type":"receipt","chat":"jid","ids":["msgid"],"ack":"delivered|read"}
+{"type":"typing","chat":"jid","from":"jid","name":"...","state":"composing|recording|paused"}
+```
+
+- `update` sai quando uma mensagem já guardada muda: reação (inclusive as minhas), edição, apagada. O plugin
+  substitui a mensagem pelo `id`. Reações/edições/apagadas sobre mensagens que não estão no banco são ignoradas.
+  Continua valendo o limite de ~8 KB por linha (cortar `text` como no `message`).
+- `receipt` para mensagens minhas; `ids` só os que existem no banco.
+- `typing` vem de `events.ChatPresence`; `recording` quando `Media == audio`. `from` é quem digita (útil em grupo).
+
+Comandos novos ou mudados:
+
+```json
+{"cmd":"send","chat":"jid","text":"...","reply":"msgid"}         → resposta citando msgid (opcional)
+{"cmd":"react","chat":"jid","id":"msgid","text":"👍"}             → text vazio remove minha reação
+{"cmd":"history","chat":"jid","limit":50,"before":1700000000}     → mensagens com ts < before (paginação)
+{"cmd":"backfill","chat":"jid","older":true}                     → pede ao celular mensagens anteriores à mais antiga guardada
+{"cmd":"presence","chat":"jid"}                                  → fica online e assina o "digitando" desta conversa
+{"cmd":"presence"}                                               → (sem chat) volta a offline
+{"cmd":"typing","chat":"jid","text":"composing|paused"}          → meu "digitando" nesta conversa
+```
+
+- ctl: `send <jid> --file <path> [--reply <msgid>]`, `react <jid> <msgid> [emoji]`, `history <jid> [limit]
+  [--before <ts>]`, `backfill <jid> [--older]`, `presence [jid]`, `typing <jid> composing|paused`.
+- `send` com `reply`: `ExtendedTextMessage` com `ContextInfo{StanzaID, Participant, QuotedMessage}`; `Participant`
+  é quem mandou a mensagem citada (meu JID se fui eu); `QuotedMessage` é reconstruído do texto guardado
+  (`Conversation`). A mensagem enviada já sai com `quote` no evento.
+- `backfill --older`: ancorado na mensagem **mais antiga** guardada, sem exigir mídia pendente; intervalo mínimo de
+  30 s por conversa (não os 10 min do backfill de mídia). A resposta segue o fluxo normal e termina no evento
+  `backfill`. Mensagens que chegam por on-demand nunca mexem no contador de não lidas.
+- `presence` com chat: `SendPresence(available)` e `SubscribePresence(chat)` (só conversa individual; grupo não
+  precisa de subscribe). Sem chat: `SendPresence(unavailable)`. Ao conectar, o daemon manda `unavailable` (o celular
+  continua notificando). O plugin chama `presence <jid>` ao abrir uma conversa com o painel aberto e `presence` ao
+  fechar o painel ou a conversa.
+- `typing`: `SendChatPresence(chat, composing|paused, "")`. Só com `presence` ativo.
+
 ## Plugin (Luau)
 
 | Entrada | Arquivo | Papel |
