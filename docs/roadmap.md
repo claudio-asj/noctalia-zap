@@ -53,7 +53,7 @@ Estrutura, AGENTS.md (agnóstico de ferramenta), papéis de agentes, arquitetura
 - [x] Foto, vídeo, áudio e documento com legenda e resposta; miniatura e duração
 - [x] Barra de progresso do áudio tocando
 - [x] Busca limpa ao escolher a conversa, que continua aberta
-- **Pronto quando:** enviar foto, documento e áudio gravado pelo painel
+- **Pronto quando:** enviar foto, documento e áudio gravado pelo painel ✅ (testado em 2026-11-26)
 
 ## Fase 8: Busca e atalhos
 - [ ] Busca no texto das mensagens (SQLite FTS5, local)
