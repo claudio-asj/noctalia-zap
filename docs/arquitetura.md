@@ -85,6 +85,42 @@ Texto do `send` fora do argv: o `runAsync` não tem stdin, então o plugin grava
 `pluginDataDir()` (diretório 0700) e chama `ctl send <jid> --file <caminho>`. O `ctl` lê e apaga o arquivo. No
 terminal, `ctl send <jid> -` lê do stdin.
 
+### Mídia (fase 4)
+
+Mensagens de mídia (`image`, `video`, `audio`, `document`, `sticker`) ganham o campo opcional `media`, tanto no
+evento `message` quanto no `history`:
+
+```json
+"media": {"thumb":"/abs/media/thumbs/<h>.jpg","w":1080,"h":1920,"seconds":12,"size":204800,
+          "mime":"image/jpeg","ptt":false,"file":"/abs/media/<h>.jpg"}
+```
+
+- Todos os campos são opcionais. `thumb` só existe se a mensagem trouxe prévia (`JPEGThumbnail`; figurinha:
+  `PngThumbnail` em `.png`) e o arquivo foi gravado. `file` só existe se a mídia já foi baixada para o cache.
+- `<h>` = os primeiros 32 caracteres hex de `sha256(chat + "|" + id)`. Arquivos 0600, diretório `media/` 0700
+  dentro do diretório de dados. Extensão do arquivo baixado a partir do `mime` (`audio/ogg` → `.ogg`; desconhecido →
+  `.bin`).
+- O banco guarda, para mensagens de mídia, o proto da mensagem (`raw BLOB`, necessário para baixar depois) e os
+  metadados (`media TEXT`, JSON). Migração com `ALTER TABLE ... ADD COLUMN` quando a coluna não existir.
+
+Comandos novos:
+
+```json
+{"cmd":"media","chat":"jid","id":"msgid"}  → {"ok":true,"data":{"path":"/abs/media/<h>.jpg"}}
+{"cmd":"play","chat":"jid","id":"msgid"}   → {"ok":true}   (baixa se preciso e toca)
+{"cmd":"stop"}                             → {"ok":true}
+```
+
+- Erros de `media`/`play`: `not_media`, `not_found`, `media_unavailable` (404/410: mídia expirou no servidor),
+  `not connected` (precisa baixar e está offline), `no_player`.
+- `ctl media <jid> <id>`, `ctl play <jid> <id>`, `ctl stop`.
+- Player: o daemon mantém no máximo um processo, com argv fixo: `mpv --no-video --really-quiet --no-terminal
+  <arquivo>`; sem mpv, `ffplay -nodisp -autoexit -loglevel quiet <arquivo>`; sem os dois, erro `no_player`.
+  `play` mata o anterior. Evento ao começar e ao terminar (fim, `stop` ou novo `play`):
+  `{"type":"playback","chat":"jid","id":"msgid","state":"playing|stopped"}`.
+- Cache: flag `-media-cache-mb N` (padrão 500). Depois de cada download, apaga os arquivos mais antigos (mtime)
+  de `media/` (não `media/thumbs/`) até caber, nunca o que acabou de baixar. Logout apaga `media/` inteiro.
+
 ## Plugin (Luau)
 
 | Entrada | Arquivo | Papel |
