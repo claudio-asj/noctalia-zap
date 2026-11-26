@@ -91,6 +91,16 @@
     "daemon_path": {
       "label": "noctalia-zapd path",
       "description": "Full path to the helper. Leave empty to look in PATH and ~/.local/bin."
+    },
+    "panel_size": {
+      "label": "Panel size",
+      "description": "Size of the window that opens from the bar.",
+      "options": {
+        "compact": "Compact (720 × 520)",
+        "normal": "Normal (900 × 640)",
+        "large": "Large (1200 × 800)",
+        "full": "Full screen"
+      }
     }
   }
 }

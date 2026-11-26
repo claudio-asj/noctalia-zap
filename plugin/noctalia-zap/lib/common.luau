@@ -3,7 +3,19 @@
 
 local M = {}
 
-M.PANEL_ID = "claudio-asj/noctalia-zap:panel"
+local PLUGIN_ID = "claudio-asj/noctalia-zap"
+local PANELS = {
+  compact = "panel_compact",
+  normal = "panel",
+  large = "panel_large",
+  full = "panel_full",
+}
+
+-- Id of the panel matching the "panel_size" setting.
+function M.panelId(): string
+  local size = noctalia.getConfig("panel_size")
+  return `{PLUGIN_ID}:{PANELS[size] or "panel"}`
+end
 
 -- Shared state keys written by service.luau.
 M.KEY_STATUS = "status" -- { state = string, detail = string }

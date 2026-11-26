@@ -59,7 +59,7 @@ noctalia.state.watch(common.KEY_UNREAD, function(value)
 end)
 
 function onClick()
-  noctalia.togglePanel(common.PANEL_ID)
+  noctalia.togglePanel(common.panelId())
 end
 
 -- Nothing to poll: rendering follows the shared state.

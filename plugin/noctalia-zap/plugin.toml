@@ -18,6 +18,8 @@ entry = "service.luau"
 id = "bar"
 entry = "bar.luau"
 
+# Panel size is fixed per manifest entry, so each size choice is its own panel
+# running the same panel.luau. The "panel_size" setting picks which one opens.
 [[panel]]
 id = "panel"
 entry = "panel.luau"
@@ -26,6 +28,46 @@ height = 640
 placement = "floating"
 position = "center"
 keyboard_focus = "on_demand"
+
+[[panel]]
+id = "panel_compact"
+entry = "panel.luau"
+width = 720
+height = 520
+placement = "floating"
+position = "center"
+keyboard_focus = "on_demand"
+
+[[panel]]
+id = "panel_large"
+entry = "panel.luau"
+width = 1200
+height = 800
+placement = "floating"
+position = "center"
+keyboard_focus = "on_demand"
+
+[[panel]]
+id = "panel_full"
+entry = "panel.luau"
+width = "fill"
+height = "fill"
+placement = "floating"
+position = "center"
+keyboard_focus = "on_demand"
+
+[[setting]]
+key = "panel_size"
+type = "select"
+label_key = "settings.panel_size.label"
+description_key = "settings.panel_size.description"
+default = "normal"
+options = [
+  { value = "compact", label_key = "settings.panel_size.options.compact" },
+  { value = "normal", label_key = "settings.panel_size.options.normal" },
+  { value = "large", label_key = "settings.panel_size.options.large" },
+  { value = "full", label_key = "settings.panel_size.options.full" },
+]
 
 [[setting]]
 key = "hide_when_empty"

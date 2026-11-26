@@ -91,6 +91,16 @@
     "daemon_path": {
       "label": "Caminho do noctalia-zapd",
       "description": "Caminho completo do auxiliar. Deixe vazio para procurar no PATH e em ~/.local/bin."
+    },
+    "panel_size": {
+      "label": "Tamanho do painel",
+      "description": "Tamanho da janela que abre pela barra.",
+      "options": {
+        "compact": "Compacto (720 × 520)",
+        "normal": "Normal (900 × 640)",
+        "large": "Grande (1200 × 800)",
+        "full": "Tela cheia"
+      }
     }
   }
 }

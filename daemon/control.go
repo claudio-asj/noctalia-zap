@@ -71,9 +71,18 @@ func listenControl(path string) (net.Listener, error) {
 	if err := ensurePrivateDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
-	if c, err := net.DialTimeout("unix", path, time.Second); err == nil {
+	// On a plugin reload the previous daemon may still be shutting down: give it
+	// a few seconds to release the socket before giving up.
+	for attempt := 0; ; attempt++ {
+		c, err := net.DialTimeout("unix", path, time.Second)
+		if err != nil {
+			break
+		}
 		c.Close()
-		return nil, fmt.Errorf("another daemon is already listening on %s", path)
+		if attempt >= 10 {
+			return nil, fmt.Errorf("another daemon is already listening on %s", path)
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err

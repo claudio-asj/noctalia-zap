@@ -67,8 +67,11 @@ Centralize esses números num módulo (`lib/style.luau`) e importe com `require`
 
 ## Painel
 
-- `placement = "floating"`, `position = "center"`, cerca de 900 × 640 (cabe no notebook de 1366×768),
-  `keyboard_focus = "on_demand"`.
+- `placement = "floating"`, `position = "center"`, `keyboard_focus = "on_demand"`.
+- Tamanho escolhido pela setting `panel_size`: compacto 720 × 520, normal 900 × 640 (padrão, cabe no notebook
+  de 1366×768), grande 1200 × 800 e tela cheia (`"fill"`). O tamanho é fixo por entrada do manifesto, então são
+  quatro `[[panel]]` com o mesmo `panel.luau`; `common.panelId()` escolhe qual abrir. O layout tem que funcionar
+  do compacto à tela cheia.
 - Telas: **Login** (QR centralizado + status) → **Conversas** (busca + lista) → **Conversa** (cabeçalho com
   voltar, mensagens, entrada).
 - Layout largo (≥ 800 px): lista à esquerda (cerca de 300 px) e conversa à direita, lado a lado.

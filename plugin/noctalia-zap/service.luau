@@ -162,7 +162,7 @@ end
 
 function onIpc(event, _payload)
   if event == "toggle" then
-    noctalia.togglePanel(common.PANEL_ID)
+    noctalia.togglePanel(common.panelId())
   end
 end
 
