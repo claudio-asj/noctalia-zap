@@ -112,6 +112,32 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	crows, err := db.Query(`PRAGMA table_info(chats)`)
+	if err != nil {
+		return err
+	}
+	haveMark := false
+	for crows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := crows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			crows.Close()
+			return err
+		}
+		if name == "marked_unread" {
+			haveMark = true
+		}
+	}
+	crows.Close()
+	if err := crows.Err(); err != nil {
+		return err
+	}
+	if !haveMark {
+		if _, err := db.Exec(`ALTER TABLE chats ADD COLUMN marked_unread INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
 	// Early versions stored the "+phone" fallback as the name, which then
 	// blocked real names from replacing it. The fallback is computed on read now.
 	if _, err := db.Exec(`UPDATE chats SET name = '' WHERE name LIKE '+%' AND jid LIKE '%@s.whatsapp.net'`); err != nil {
@@ -216,6 +242,48 @@ func (s *MsgStore) NewestMessage(ctx context.Context, chat string) (id string, t
 		return "", 0, false, false, nil
 	}
 	return id, ts, me, err == nil, err
+}
+
+// MessageRef identifies a stored message the way a WhatsApp message key does.
+type MessageRef struct {
+	ID     string
+	Sender string
+	TS     int64
+	Me     bool
+}
+
+// NewestRef returns the newest stored message of a chat with its sender, used
+// as the key of mark-as-unread patches.
+func (s *MsgStore) NewestRef(ctx context.Context, chat string) (MessageRef, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var r MessageRef
+	err := s.db.QueryRowContext(ctx, `SELECT id, sender, ts, me FROM messages WHERE chat = ?
+		ORDER BY ts DESC, rowid DESC LIMIT 1`, chat).Scan(&r.ID, &r.Sender, &r.TS, &r.Me)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MessageRef{}, false, nil
+	}
+	return r, err == nil, err
+}
+
+// SetMarkedUnread turns the "marked as unread" flag of a chat on or off.
+func (s *MsgStore) SetMarkedUnread(ctx context.Context, jid string, marked bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.ExecContext(ctx, `UPDATE chats SET marked_unread = ? WHERE jid = ?`, marked, jid)
+	return err
+}
+
+// MarkedUnread reports whether a chat carries the "marked as unread" flag.
+func (s *MsgStore) MarkedUnread(ctx context.Context, jid string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var m bool
+	err := s.db.QueryRowContext(ctx, `SELECT marked_unread FROM chats WHERE jid = ?`, jid).Scan(&m)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return m, err
 }
 
 // OldestMessage returns the oldest stored message of a chat, used as the
@@ -365,7 +433,7 @@ func (s *MsgStore) TakeUnread(ctx context.Context, jid string) ([]UnreadRef, err
 	if _, err := tx.ExecContext(ctx, `UPDATE messages SET unread = 0 WHERE chat = ?`, jid); err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE chats SET unread = 0 WHERE jid = ?`, jid); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE chats SET unread = 0, marked_unread = 0 WHERE jid = ?`, jid); err != nil {
 		return nil, err
 	}
 	return refs, tx.Commit()
@@ -376,7 +444,7 @@ func (s *MsgStore) Chats(ctx context.Context) ([]Chat, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Chats without any message (history sync sends many) stay hidden, as in WhatsApp.
-	rows, err := s.db.QueryContext(ctx, `SELECT jid, name, unread, last, last_kind, ts
+	rows, err := s.db.QueryContext(ctx, `SELECT jid, name, unread, last, last_kind, ts, marked_unread
 		FROM chats WHERE ts > 0 ORDER BY ts DESC`)
 	if err != nil {
 		return nil, err
@@ -385,7 +453,7 @@ func (s *MsgStore) Chats(ctx context.Context) ([]Chat, error) {
 	chats := []Chat{}
 	for rows.Next() {
 		var c Chat
-		if err := rows.Scan(&c.JID, &c.Name, &c.Unread, &c.Last, &c.LastKind, &c.TS); err != nil {
+		if err := rows.Scan(&c.JID, &c.Name, &c.Unread, &c.Last, &c.LastKind, &c.TS, &c.MarkedUnread); err != nil {
 			return nil, err
 		}
 		chats = append(chats, c)

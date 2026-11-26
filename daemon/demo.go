@@ -195,6 +195,16 @@ func (d *DemoDaemon) Handle(ctx context.Context, req Request) Response {
 		return d.cmdReact(ctx, req)
 	case "read":
 		return d.cmdRead(ctx, req)
+	case "unread":
+		chat, err := d.knownChat(ctx, req.Chat)
+		if err != nil {
+			return fail(err)
+		}
+		if err := d.store.SetMarkedUnread(ctx, chat, true); err != nil {
+			return fail(err)
+		}
+		d.emitChats(ctx)
+		return Response{OK: true}
 	case "presence":
 		if req.Chat != "" {
 			if _, err := d.knownChat(ctx, req.Chat); err != nil {

@@ -82,6 +82,7 @@
       "send": "Send (Enter)",
       "send_error": "The message was not sent. Try again.",
       "close": "Close chat",
+      "mark_unread": "Mark as unread",
       "updating": "Updating…",
       "updating_media": "Fetching older media from the phone…",
       "unknown": "Unknown",

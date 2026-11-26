@@ -30,6 +30,8 @@ type Chat struct {
 	Archived bool   `json:"archived,omitempty"`
 	Avatar   string `json:"avatar,omitempty"` // profile picture preview, absolute path
 	Pinned   bool   `json:"pinned,omitempty"`
+	// MarkedUnread is the manual "mark as unread" flag, shown even with no unread messages.
+	MarkedUnread bool `json:"marked_unread,omitempty"`
 }
 
 // ChatsEvent carries one page of the full chat list. The plugin's line reader

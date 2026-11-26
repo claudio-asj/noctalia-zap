@@ -69,10 +69,14 @@ local function onChats(items)
     if type(c) == "table" and type(c.jid) == "string" then
       local n = tonumber(c.unread) or 0
       local archived = c.archived == true
+      local markedUnread = c.marked_unread == true
       -- Archived chats stay out of the bar count, like WhatsApp with
       -- "Keep chats archived". Every other chat counts, even past the cut.
       if not archived then
         unread += n
+        if markedUnread and n == 0 then
+          unread += 1
+        end
       end
       if archived then
         keptArchived += 1
@@ -92,6 +96,7 @@ local function onChats(items)
         jid = c.jid,
         name = if type(c.name) == "string" and c.name ~= "" then c.name else noctalia.tr("panel.chat.unknown"),
         unread = n,
+        markedUnread = markedUnread,
         last = c.last or "",
         lastKind = c.last_kind or "",
         ts = tonumber(c.ts) or 0,

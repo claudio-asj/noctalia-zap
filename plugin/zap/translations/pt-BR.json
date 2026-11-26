@@ -82,6 +82,7 @@
       "send": "Enviar (Enter)",
       "send_error": "A mensagem não foi enviada. Tente de novo.",
       "close": "Fechar conversa",
+      "mark_unread": "Marcar como não lida",
       "updating": "Atualizando…",
       "updating_media": "Buscando mídias antigas no celular…",
       "unknown": "Desconhecido",

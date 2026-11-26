@@ -215,6 +215,7 @@ const ctlUsage = `commands:
   send ... [--reply <msg-id>]  (reply to a message; also valid with - and --file)
   react <chat-jid> <msg-id> [emoji]  (no emoji removes my reaction)
   read <chat-jid>
+  unread <chat-jid>
   backfill <chat-jid> [--older]  (ask the phone to resend recent or older history)
   presence [chat-jid]        (online + typing of the chat; no chat: offline)
   typing <chat-jid> composing|paused
@@ -285,9 +286,9 @@ func parseCtlArgs(args []string) (Request, error) {
 		if len(rest) == 3 {
 			req.Text = rest[2]
 		}
-	case "read":
+	case "read", "unread":
 		if len(rest) != 1 {
-			return req, errors.New("usage: read <chat-jid>")
+			return req, fmt.Errorf("usage: %s <chat-jid>", req.Cmd)
 		}
 		req.Chat = rest[0]
 	case "media", "play":

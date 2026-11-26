@@ -544,7 +544,7 @@ local function selectChat(jid)
   end
   -- Receipts only once the user can see the chat; onOpen covers the rest.
   local c = chatByJid(jid)
-  if isOpen and c and c.unread > 0 then
+  if isOpen and c and (c.unread > 0 or c.markedUnread) then
     markRead(jid)
   end
   render()
@@ -947,6 +947,8 @@ local function chatRow(c)
   }
   if c.unread > 0 then
     table.insert(bottom, badge(c.unread))
+  elseif c.markedUnread then
+    table.insert(bottom, ui.box({ width = 10, height = 10, radius = 5, fill = "primary" }))
   end
   return ui.row({
     key = c.jid,
@@ -1800,6 +1802,16 @@ local function composer()
   return ui.column({ gap = style.gap.xs }, parts)
 end
 
+local function closeChat()
+  setMyTyping(false)
+  setPresence(nil)
+  selected = nil
+  messages, messageIds = {}, {}
+  selectedMsg, replyTo, typingBy = nil, nil, {}
+  publishActive()
+  render()
+end
+
 local function conversationPane()
   if selected == nil then
     return ui.column({ flexGrow = 1, align = "center", justify = "center", gap = style.gap.md }, {
@@ -1827,6 +1839,9 @@ local function conversationPane()
       fontSize = style.font.caption,
       color = "primary",
     }))
+  elseif actionError ~= nil then
+    -- Errors of header actions (mark as unread) show under the name.
+    table.insert(titleParts, ui.label({ text = actionError, fontSize = style.font.caption, color = "error" }))
   elseif avatarPending or backfillPending then
     table.insert(titleParts, ui.row({ gap = style.gap.xs, align = "center" }, {
       ui.glyph({ name = "refresh", size = 12, color = "on_surface_variant" }),
@@ -1845,19 +1860,28 @@ local function conversationPane()
       -- Columns center their children by default: keep the title left-aligned.
       ui.column({ gap = 2, flexGrow = 1, align = "start" }, titleParts),
       ui.button({
+        glyph = "mail",
+        variant = "ghost",
+        controlSize = "sm",
+        tooltip = noctalia.tr("panel.chat.mark_unread"),
+        onClick = function()
+          local jid = selected
+          if jid == nil then
+            return
+          end
+          ctl({ "unread", jid }, function(ok)
+            if ok and selected == jid then
+              closeChat()
+            end
+          end)
+        end,
+      }),
+      ui.button({
         glyph = "x",
         variant = "ghost",
         controlSize = "sm",
         tooltip = noctalia.tr("panel.chat.close"),
-        onClick = function()
-          setMyTyping(false)
-          setPresence(nil)
-          selected = nil
-          messages, messageIds = {}, {}
-          selectedMsg, replyTo, typingBy = nil, nil, {}
-          publishActive()
-          render()
-        end,
+        onClick = closeChat,
       }),
     }),
     ui.separator({ color = "outline_variant" }),
@@ -2079,7 +2103,7 @@ function onOpen(_context)
     -- Messages may have arrived while closed: reload and acknowledge them.
     loadHistory(selected, HISTORY_LIMIT)
     local c = chatByJid(selected)
-    if c and c.unread > 0 then
+    if c and (c.unread > 0 or c.markedUnread) then
       markRead(selected)
     end
   end

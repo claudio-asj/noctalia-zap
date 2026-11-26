@@ -15,6 +15,8 @@ import (
 
 	"github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/proto/waWeb"
@@ -374,12 +376,15 @@ func (d *Daemon) handleEvent(raw any) {
 		// whatsmeow already stored the new chat settings; resend the list.
 		d.scheduleChats()
 	case *events.MarkChatAsRead:
+		key := d.chatKey(ctx, evt.JID).String()
 		if evt.Action.GetRead() {
-			if _, err := d.store.TakeUnread(ctx, d.chatKey(ctx, evt.JID).String()); err != nil {
+			if _, err := d.store.TakeUnread(ctx, key); err != nil {
 				log.Printf("mark read: %v", err)
 			}
-			d.scheduleChats()
+		} else if err := d.store.SetMarkedUnread(ctx, key, true); err != nil {
+			log.Printf("mark unread: %v", err)
 		}
+		d.scheduleChats()
 	}
 }
 
@@ -852,6 +857,8 @@ func (d *Daemon) Handle(ctx context.Context, req Request) Response {
 		return d.cmdTyping(ctx, req)
 	case "read":
 		return d.cmdRead(ctx, req)
+	case "unread":
+		return d.cmdUnread(ctx, req)
 	case "media":
 		return d.cmdMedia(ctx, req)
 	case "play":
@@ -1010,15 +1017,32 @@ func (d *Daemon) cmdRead(ctx context.Context, req Request) Response {
 	if err != nil {
 		return fail(err)
 	}
-	c, _, err := d.connectedClient()
+	marked, err := d.store.MarkedUnread(ctx, jid.String())
 	if err != nil {
 		return fail(err)
+	}
+	c, _, err := d.connectedClient()
+	if err != nil {
+		if !marked {
+			return fail(err)
+		}
+		// Offline: only the local mark goes away.
+		if err := d.store.SetMarkedUnread(ctx, jid.String(), false); err != nil {
+			return fail(err)
+		}
+		d.scheduleChats()
+		return Response{OK: true}
 	}
 	refs, err := d.store.TakeUnread(ctx, jid.String())
 	if err != nil {
 		return fail(err)
 	}
 	d.scheduleChats()
+	if marked {
+		if err := d.sendReadState(ctx, c, jid, true); err != nil {
+			log.Printf("clear unread mark: %v", err)
+		}
+	}
 	bySender := map[string][]types.MessageID{}
 	for _, r := range refs {
 		bySender[r.Sender] = append(bySender[r.Sender], r.ID)
@@ -1037,6 +1061,54 @@ func (d *Daemon) cmdRead(ctx context.Context, req Request) Response {
 			return Response{Error: "read receipts failed"}
 		}
 	}
+	return Response{OK: true}
+}
+
+// sendReadState tells WhatsApp (and so the phone) that a chat is read or
+// marked unread, anchored on the newest stored message.
+func (d *Daemon) sendReadState(ctx context.Context, c *whatsmeow.Client, jid types.JID, read bool) error {
+	ref, found, err := d.store.NewestRef(ctx, jid.String())
+	if err != nil {
+		return err
+	}
+	if !found {
+		return errors.New("not_found")
+	}
+	key := &waCommon.MessageKey{
+		RemoteJID: proto.String(jid.String()),
+		FromMe:    proto.Bool(ref.Me),
+		ID:        proto.String(ref.ID),
+	}
+	if jid.Server == types.GroupServer && ref.Sender != "" {
+		key.Participant = proto.String(ref.Sender)
+	}
+	patch := appstate.BuildMarkChatAsRead(jid, read, time.Unix(ref.TS, 0), key)
+	return c.SendAppState(ctx, patch)
+}
+
+// cmdUnread marks a chat as unread, here and on the phone.
+func (d *Daemon) cmdUnread(ctx context.Context, req Request) Response {
+	jid, err := d.parseChat(ctx, req.Chat)
+	if err != nil {
+		return fail(err)
+	}
+	c, _, err := d.connectedClient()
+	if err != nil {
+		return fail(err)
+	}
+	sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := d.sendReadState(sctx, c, jid, false); err != nil {
+		if err.Error() == "not_found" {
+			return fail(err)
+		}
+		log.Printf("mark unread: %v", err)
+		return Response{Error: "mark unread failed"}
+	}
+	if err := d.store.SetMarkedUnread(ctx, jid.String(), true); err != nil {
+		return fail(err)
+	}
+	d.scheduleChats()
 	return Response{OK: true}
 }
 
