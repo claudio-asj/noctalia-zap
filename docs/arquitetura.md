@@ -230,6 +230,52 @@ Comandos novos ou mudados:
   `older: true|false` logo após o history on-demand e de novo com `thumbs: true` se miniaturas foram gravadas. Em
   grupo, o `ack` para em `delivered` (`read` só em conversa individual).
 
+### Enviar mídia (fase 7)
+
+Arquivos temporários (colados, gravados) ficam em `<data>/outbox/` (0700, arquivos 0600). O daemon apaga cada um
+depois de enviado com sucesso, e na partida apaga os que têm mais de 1 dia. O `runAsync` do plugin tem timeout
+máximo de 60 s, então tudo que pode demorar responde na hora e o resultado chega como evento.
+
+Comandos:
+
+```json
+{"cmd":"pick"}                                  → {"ok":true}  e depois o evento picked
+{"cmd":"paste"}                                 → {"ok":true,"data":{"path":"/abs/outbox/clip-<ts>.png"}}
+{"cmd":"record","text":"start|stop|cancel"}     → start/cancel: {"ok":true}; stop: {"ok":true,"data":{"path":"...ogg","seconds":7}}
+{"cmd":"send","chat":"jid","text":"legenda","media":"/abs/arquivo","ptt":false,"reply":"msgid"}
+```
+
+- ctl: `pick`, `paste`, `record start|stop|cancel`, `send <jid> --media <path> [--file <legenda>] [--ptt]
+  [--reply <msgid>]` (o `--file` vira legenda; sem ele, sem legenda).
+- `pick`: `org.freedesktop.portal.FileChooser.OpenFile` (D-Bus de sessão, `github.com/godbus/dbus/v5`), um arquivo
+  só, título "Noctalia Zap". Responde na hora; ao fechar o seletor emite
+  `{"type":"picked","path":"/abs"}` ou `{"type":"picked","cancelled":true}`. Só aceita URI `file://`. Um seletor
+  por vez (`pick` com outro aberto responde erro `busy`). Sem portal: erro `no_portal`.
+- `paste`: `wl-paste --list-types` e depois `wl-paste --no-newline --type <tipo>` (argv, stdout capturado, limite de
+  20 MB). Prefere `image/png`, depois `image/jpeg`, `image/webp`, `image/gif`. Erros: `no_wl_paste` (programa
+  ausente), `no_image` (área de transferência sem imagem).
+- `record start`: `pw-record --rate 48000 --channels 1 <outbox>/rec-<ts>.wav`. Emite
+  `{"type":"recording","state":"recording","started":<unix>}`. `stop`: SIGINT no `pw-record`, espera, converte com
+  `ffmpeg -y -loglevel error -i <wav> -ac 1 -ar 48000 -c:a libopus -b:a 32k -application voip <ogg>`, apaga o wav,
+  emite `{"type":"recording","state":"stopped"}` e responde com o caminho e a duração (ffprobe, ou pelo tempo
+  gravado). `cancel`: mata, apaga, emite `stopped`. Para sozinho depois de 15 min (como `stop`, sem enviar, e emite
+  `stopped` com `"path"`). Erros: `no_recorder`, `no_ffmpeg`, `not_recording`, `already_recording`.
+- `send` com `media`: lê o arquivo (limite 100 MB → `too_large`), detecta o tipo (`http.DetectContentType` +
+  extensão), faz `Upload` e monta:
+  - `image/jpeg|png` (≤ 16 MB) → `ImageMessage` com `JPEGThumbnail` (máx. 100 px no lado maior), largura e altura;
+    `image/webp|gif` e imagens maiores → documento.
+  - `video/mp4` (≤ 64 MB) → `VideoMessage`; miniatura com `ffmpeg -ss 0.5 -frames:v 1` e duração com `ffprobe`,
+    se existirem (senão sem miniatura e 0 s). Outros vídeos → documento.
+  - `audio/*` → `AudioMessage`; `ptt: true` só para `audio/ogg` (Opus), com `Seconds` (ffprobe). Outros áudios
+    sem ptt.
+  - resto → `DocumentMessage` com `FileName` = nome do arquivo.
+  - Legenda (`text`) em imagem, vídeo e documento; ignorada em áudio. `reply` como no envio de texto.
+  - A mensagem fica guardada com `raw`, `media` e `file` = o caminho enviado (se estiver no outbox, `file` fica
+    vazio, porque o arquivo é apagado), a miniatura vai para `thumbs/`, e sai o evento `message` normal.
+  - Pode passar de 60 s em arquivo grande: o daemon continua mesmo que o `ctl` desista; falha depois disso sai como
+    `{"type":"send_failed","chat":"jid","error":"..."}`.
+- Nenhum caminho de arquivo nem legenda vai para o log.
+
 ## Plugin (Luau)
 
 | Entrada | Arquivo | Papel |
