@@ -89,6 +89,10 @@ Cores: sempre por papel (`primary`, `on_surface`, `on_surface_variant`, `outline
 - Settings `int` aceitam `min`/`max`; `advanced = true` esconde a opção na seção avançada.
 - `ui.image` pode manter cache pelo caminho: o daemon grava cada QR com um nome novo (`qr-<n>.png`).
 
+- Confirmado na prática: um `ui.column` com `width` fixo, sem `flexGrow`, dentro de um `ui.row` pode tomar o espaço
+  livre do row e empurrar os irmãos com `flexGrow = 1` (avatar de inicial no cabeçalho). Declare `flexGrow = 0` em
+  colunas/rows de tamanho fixo.
+
 ## Desenvolvimento local
 
 - Pasta: `~/.local/share/noctalia/plugins/<plugin>/`, a fonte de maior precedência. Neste projeto, link

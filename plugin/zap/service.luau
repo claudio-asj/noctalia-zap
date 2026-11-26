@@ -372,9 +372,12 @@ function onConfigChanged()
   end
 end
 
-function onIpc(event, _payload)
+function onIpc(event, payload)
   if event == "toggle" then
     noctalia.togglePanel(common.panelId())
+  elseif event == "open" and type(payload) == "string" and payload ~= "" then
+    -- Opens the panel on a chat, like clicking a notification.
+    onNotifyAction("open", payload)
   end
 end
 

@@ -913,6 +913,7 @@ local function avatar(name: string, picture: string?)
   return ui.column({
     width = size,
     height = size,
+    flexGrow = 0, -- never take the free space of the row it sits in
     radius = size / 2,
     fill = "primary_container",
     align = "center",
@@ -1837,9 +1838,12 @@ local function conversationPane()
     }))
   end
   return ui.column({ flexGrow = 1, gap = style.gap.md }, {
-    ui.row({ gap = style.gap.md, align = "center" }, {
+    -- space_between keeps the close button at the right edge even when the
+    -- host re-lays out the row every second (audio progress, typing).
+    ui.row({ gap = style.gap.md, align = "center", justify = "space_between" }, {
       avatar(name, if c then c.avatar else nil),
-      ui.column({ gap = 2, flexGrow = 1 }, titleParts),
+      -- Columns center their children by default: keep the title left-aligned.
+      ui.column({ gap = 2, flexGrow = 1, align = "start" }, titleParts),
       ui.button({
         glyph = "x",
         variant = "ghost",
