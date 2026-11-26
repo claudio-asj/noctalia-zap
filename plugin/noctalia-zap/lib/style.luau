@@ -13,5 +13,6 @@ return {
   qrSize = 280,
   bubbleMax = 420,
   thumbMax = 240,
+  sticker = 128,
   barGlyph = 14,
 }

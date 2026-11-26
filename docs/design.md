@@ -53,6 +53,8 @@ Centralize esses números num módulo (`lib/style.luau`) e importe com `require`
   inicial (`primary_container` / `on_primary_container`).
 - **Badge:** não existe componente. Use `ui.box` (`fill = "primary"`, `radius` alto) com um `ui.label`
   (`on_primary`, `bold`, 11).
+- **Figurinhas:** sem balão, 128 × 128, `fit = "contain"`, sem ação de clique (não vão para a pasta de
+  downloads pelo painel). Fotos e vídeos ficam no balão, até 240 px, `fit = "cover"`, clique baixa e abre.
 - **Separadores:** `ui.separator` com `color = "outline_variant"`.
 - **Tooltips** em todo botão só de ícone.
 

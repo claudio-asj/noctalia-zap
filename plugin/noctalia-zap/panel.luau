@@ -737,8 +737,43 @@ end
 
 local MEDIA_KINDS = { image = true, video = true, audio = true, document = true, sticker = true }
 
+-- Stickers are drawn like WhatsApp does: no bubble, fixed size, not cropped,
+-- and clicking does nothing (they are not files the user wants to keep).
+local function stickerBubble(m, key: string, showSender: boolean)
+  local mine = m.me
+  local children = {}
+  if showSender and not mine and m.name ~= "" then
+    table.insert(children, ui.label({
+      text = m.name,
+      fontSize = style.font.caption,
+      fontWeight = "medium",
+      color = "secondary",
+      maxLines = 1,
+    }))
+  end
+  table.insert(children, ui.image({
+    key = "sticker-" .. m.id,
+    path = m.media.thumb,
+    width = style.sticker,
+    height = style.sticker,
+    fit = "contain",
+  }))
+  table.insert(children, ui.label({
+    text = noctalia.formatTime("%H:%M", m.ts),
+    fontSize = style.font.caption,
+    color = "on_surface_variant",
+    textAlign = if mine then "end" else "start",
+  }))
+  return ui.row({ key = key, justify = if mine then "end" else "start" }, {
+    ui.column({ gap = style.gap.xs, align = if mine then "end" else "start" }, children),
+  })
+end
+
 local function bubble(m, index: number, showSender: boolean)
   local mine = m.me
+  if m.kind == "sticker" and m.media ~= nil and m.media.thumb ~= nil then
+    return stickerBubble(m, if m.id ~= "" then m.id else `msg-{index}-{m.ts}`, showSender)
+  end
   local children = {}
   if showSender and not mine and m.name ~= "" then
     table.insert(children, ui.label({
