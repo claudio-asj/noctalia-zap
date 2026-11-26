@@ -21,12 +21,14 @@ Estrutura, AGENTS.md (agnóstico de ferramenta), papéis de agentes, arquitetura
 - **Pronto quando:** abrir conversa, enviar e receber notificação pelo painel ✅ (testado em 2026-11-26)
 
 ## Fase 4: Mídia recebida
-- [ ] Miniatura de foto e vídeo na hora (prévia que vem dentro da mensagem)
-- [ ] `ctl media`: baixar e descriptografar para o cache em `pluginDataDir`; clique abre no app padrão
-- [ ] Áudio e voz com tocar/parar (o daemon controla o `mpv`) e duração
-- [ ] Documentos e figurinhas: baixar e abrir
-- [ ] Cache com limite configurável e limpeza automática
-- **Pronto quando:** ver miniatura, abrir foto em tamanho real e ouvir um áudio pelo painel
+- [x] Miniatura de foto e vídeo na hora (prévia que vem dentro da mensagem)
+- [x] `ctl media`: baixar e descriptografar para o cache em `pluginDataDir`; clique abre no app padrão
+- [x] Áudio e voz com tocar/parar (o daemon controla o `mpv`) e duração
+- [x] Documentos e figurinhas: baixar e abrir
+- [x] Cache com limite configurável e limpeza automática
+- [x] Pasta de downloads configurável (padrão Downloads/WhatsApp); áudio só no cache
+- [x] Recuperar mídia antiga ao abrir a conversa (histórico sob demanda + miniaturas)
+- **Pronto quando:** ver miniatura, abrir foto em tamanho real e ouvir um áudio pelo painel ✅ (testado em 2026-11-26)
 
 ## Fase 5: Contatos e fotos
 - [ ] Nomes para as conversas que só mostram telefone (push name, sincronização de contatos)
