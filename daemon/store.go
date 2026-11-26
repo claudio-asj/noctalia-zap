@@ -186,7 +186,7 @@ func (s *MsgStore) FillMedia(ctx context.Context, m Message) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	res, err := s.db.ExecContext(ctx, `UPDATE messages SET raw = ?, media = ?
-		WHERE chat = ? AND id = ? AND (raw IS NULL OR length(raw) = 0)`, raw, mediaJSON, m.Chat, m.ID)
+		WHERE chat = ? AND id = ? AND deleted = 0 AND (raw IS NULL OR length(raw) = 0)`, raw, mediaJSON, m.Chat, m.ID)
 	if err != nil {
 		return false, err
 	}
@@ -199,7 +199,7 @@ func (s *MsgStore) NeedsBackfill(ctx context.Context, chat string) (bool, error)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE chat = ?
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE chat = ? AND deleted = 0
 		AND kind IN ('image', 'video', 'audio', 'document', 'sticker')
 		AND (raw IS NULL OR length(raw) = 0)`, chat).Scan(&n)
 	return n > 0, err
@@ -211,7 +211,7 @@ func (s *MsgStore) NewestMessage(ctx context.Context, chat string) (id string, t
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	err = s.db.QueryRowContext(ctx, `SELECT id, ts, me FROM messages WHERE chat = ?
-		ORDER BY ts DESC LIMIT 1`, chat).Scan(&id, &ts, &me)
+		ORDER BY ts DESC, rowid DESC LIMIT 1`, chat).Scan(&id, &ts, &me)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", 0, false, false, nil
 	}
@@ -224,7 +224,7 @@ func (s *MsgStore) OldestMessage(ctx context.Context, chat string) (id string, t
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	err = s.db.QueryRowContext(ctx, `SELECT id, ts, me FROM messages WHERE chat = ?
-		ORDER BY ts ASC LIMIT 1`, chat).Scan(&id, &ts, &me)
+		ORDER BY ts ASC, rowid ASC LIMIT 1`, chat).Scan(&id, &ts, &me)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", 0, false, false, nil
 	}
@@ -320,7 +320,7 @@ func (s *MsgStore) SetUnread(ctx context.Context, jid string, count int) error {
 	}
 	if count > 0 {
 		if _, err := tx.ExecContext(ctx, `UPDATE messages SET unread = 1 WHERE chat = ? AND id IN (
-			SELECT id FROM messages WHERE chat = ? AND me = 0 ORDER BY ts DESC LIMIT ?)`,
+			SELECT id FROM messages WHERE chat = ? AND me = 0 ORDER BY ts DESC, rowid DESC LIMIT ?)`,
 			jid, jid, count); err != nil {
 			return err
 		}
@@ -345,7 +345,7 @@ func (s *MsgStore) TakeUnread(ctx context.Context, jid string) ([]UnreadRef, err
 	}
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx, `SELECT id, sender, ts FROM messages
-		WHERE chat = ? AND unread = 1 AND me = 0 ORDER BY ts`, jid)
+		WHERE chat = ? AND unread = 1 AND me = 0 ORDER BY ts, rowid`, jid)
 	if err != nil {
 		return nil, err
 	}
@@ -399,16 +399,18 @@ const messageColumns = `id, chat, sender, name, text, kind, ts, me, media, file,
 	quote_id, quote_from, quote_text, quote_kind, edited, deleted, ack`
 
 // History returns up to limit messages of a chat, oldest first. When before is
-// positive, only messages with ts < before are considered (pagination).
+// positive, only messages with ts <= before are considered (pagination).
 func (s *MsgStore) History(ctx context.Context, jid string, limit int, before int64) ([]Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if before <= 0 {
 		before = math.MaxInt64
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT * FROM (
-		SELECT `+messageColumns+` FROM messages
-		WHERE chat = ? AND ts < ? ORDER BY ts DESC LIMIT ?) ORDER BY ts`, jid, before, limit)
+	// ts <= before: messages sharing the boundary second are not lost; the
+	// caller deduplicates by id.
+	rows, err := s.db.QueryContext(ctx, `SELECT `+messageColumns+` FROM (
+		SELECT `+messageColumns+`, rowid AS rid FROM messages
+		WHERE chat = ? AND ts <= ? ORDER BY ts DESC, rowid DESC LIMIT ?) ORDER BY ts, rid`, jid, before, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -588,15 +590,16 @@ func (s *MsgStore) ApplyEdit(ctx context.Context, chat, id, text string) (bool, 
 		return false, nil
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE chats SET last = ? WHERE jid = ? AND ? = (
-		SELECT id FROM messages WHERE chat = ? ORDER BY ts DESC LIMIT 1)`, text, chat, id, chat); err != nil {
+		SELECT id FROM messages WHERE chat = ? ORDER BY ts DESC, rowid DESC LIMIT 1)`, text, chat, id, chat); err != nil {
 		return false, err
 	}
 	return true, tx.Commit()
 }
 
 // ApplyRevoke marks a stored message as deleted for everyone and drops its
-// content. An unread message stops counting as unread. Reports whether
-// anything changed.
+// content (including the recorded file path). If it was the newest message,
+// the chat preview falls back to the previous message that is not deleted.
+// An unread message stops counting as unread. Reports whether anything changed.
 func (s *MsgStore) ApplyRevoke(ctx context.Context, chat, id string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -605,22 +608,46 @@ func (s *MsgStore) ApplyRevoke(ctx context.Context, chat, id string) (bool, erro
 		return false, err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `UPDATE messages SET deleted = 1, text = '', raw = NULL, media = NULL,
-		quote_id = '', quote_from = '', quote_text = '', quote_kind = '', unread = 0
-		WHERE chat = ? AND id = ? AND deleted = 0`, chat, id)
+	var wasUnread bool
+	err = tx.QueryRowContext(ctx, `SELECT unread FROM messages WHERE chat = ? AND id = ? AND deleted = 0`,
+		chat, id).Scan(&wasUnread)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return false, nil
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE chats SET last = '' WHERE jid = ? AND ? = (
-		SELECT id FROM messages WHERE chat = ? ORDER BY ts DESC LIMIT 1)`, chat, id, chat); err != nil {
+	var newest string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM messages WHERE chat = ? AND deleted = 0
+		ORDER BY ts DESC, rowid DESC LIMIT 1`, chat).Scan(&newest); err != nil {
 		return false, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE chats SET unread = (
-		SELECT COUNT(*) FROM messages WHERE chat = ? AND unread = 1) WHERE jid = ?`, chat, chat); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE messages SET deleted = 1, text = '', raw = NULL, media = NULL,
+		file = '', quote_id = '', quote_from = '', quote_text = '', quote_kind = '', unread = 0
+		WHERE chat = ? AND id = ?`, chat, id); err != nil {
 		return false, err
+	}
+	if newest == id {
+		var text, kind string
+		var ts int64
+		err := tx.QueryRowContext(ctx, `SELECT text, kind, ts FROM messages WHERE chat = ? AND deleted = 0
+			ORDER BY ts DESC, rowid DESC LIMIT 1`, chat).Scan(&text, &kind, &ts)
+		switch {
+		case err == nil:
+			_, err = tx.ExecContext(ctx, `UPDATE chats SET last = ?, last_kind = ?, ts = ? WHERE jid = ?`,
+				text, kind, ts, chat)
+		case errors.Is(err, sql.ErrNoRows):
+			// Nothing left to show; ts stays so the chat remains listed.
+			_, err = tx.ExecContext(ctx, `UPDATE chats SET last = '', last_kind = '' WHERE jid = ?`, chat)
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+	if wasUnread {
+		if _, err := tx.ExecContext(ctx, `UPDATE chats SET unread = MAX(unread - 1, 0) WHERE jid = ?`, chat); err != nil {
+			return false, err
+		}
 	}
 	return true, tx.Commit()
 }
@@ -656,7 +683,7 @@ func (s *MsgStore) MediaIDs(ctx context.Context, chat string, limit int) ([]stri
 	defer s.mu.Unlock()
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM messages WHERE chat = ?
 		AND kind IN ('image', 'video', 'sticker') AND length(raw) > 0
-		ORDER BY ts DESC LIMIT ?`, chat, limit)
+		ORDER BY ts DESC, rowid DESC LIMIT ?`, chat, limit)
 	if err != nil {
 		return nil, err
 	}

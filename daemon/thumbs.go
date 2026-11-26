@@ -17,9 +17,11 @@ const maxStickerThumb = 512 * 1024
 
 // fetchMissingThumbs downloads previews that a history resend did not embed:
 // the thumbnail of photos and videos, and small stickers (converted to PNG).
-// It runs in the background, one download at a time, and then calls done.
-func (d *Daemon) fetchMissingThumbs(chat string, done func()) {
-	defer done()
+// It runs in the background, one download at a time, and then calls done with
+// whether any preview was written.
+func (d *Daemon) fetchMissingThumbs(chat string, done func(wrote bool)) {
+	wrote := false
+	defer func() { done(wrote) }()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	ids, err := d.store.MediaIDs(ctx, chat, d.cfg.HistoryLimit*2)
@@ -45,7 +47,9 @@ func (d *Daemon) fetchMissingThumbs(chat string, done func()) {
 		}
 		if err := writeThumb(d.cfg.DataDir, chat, id, ref.Kind, data); err != nil {
 			log.Printf("write thumb: %v", err)
+			continue
 		}
+		wrote = true
 	}
 }
 

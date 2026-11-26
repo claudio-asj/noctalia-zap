@@ -427,3 +427,21 @@ func saveUnique(dir, name string, data []byte) (string, error) {
 	}
 	return path, nil
 }
+
+// removeMessageCache deletes the cached files of a message: the preview, the
+// cached download and the sticker sound. Files in the user's downloads folder
+// are never touched.
+func removeMessageCache(dataDir, chat, id, kind string) {
+	_ = os.Remove(thumbFilePath(dataDir, chat, id, kind))
+	for _, key := range []string{id, id + "#sound"} {
+		matches, err := filepath.Glob(filepath.Join(mediaDir(dataDir), mediaHash(chat, key)+".*"))
+		if err != nil {
+			continue
+		}
+		for _, p := range matches {
+			if fileExists(p) {
+				_ = os.Remove(p)
+			}
+		}
+	}
+}

@@ -222,6 +222,13 @@ Comandos novos ou mudados:
   continua notificando). O plugin chama `presence <jid>` ao abrir uma conversa com o painel aberto e `presence` ao
   fechar o painel ou a conversa.
 - `typing`: `SendChatPresence(chat, composing|paused, "")`. Só com `presence` ativo.
+- Correções da revisão: `presence` é serializado (o último pedido vence) e tem lease de 90 s; o plugin renova a cada
+  30 s com a conversa aberta, então um plugin que morre não deixa o celular sem notificar. Revoke apaga cache e
+  miniatura (nunca a pasta de downloads), volta o `last` para a mensagem anterior e só desconta não lida se ela
+  era não lida. `history --before` usa `ts <= before` com desempate por `rowid` (o plugin deduplica). `quote.me`
+  marca citação de mensagem minha; sem nome, `quote.name` é o `+telefone`. Evento `backfill` sai com
+  `older: true|false` logo após o history on-demand e de novo com `thumbs: true` se miniaturas foram gravadas. Em
+  grupo, o `ack` para em `delivered` (`read` só em conversa individual).
 
 ## Plugin (Luau)
 

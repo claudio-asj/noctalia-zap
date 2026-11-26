@@ -102,6 +102,7 @@ function M.normalizeMessage(m): any
       name = if type(m.quote.name) == "string" then m.quote.name else "",
       text = if type(m.quote.text) == "string" then m.quote.text else "",
       kind = if type(m.quote.kind) == "string" then m.quote.kind else "text",
+      me = m.quote.me == true,
     }
   end
   local reactions = {}
@@ -154,6 +155,12 @@ function M.senderColor(jid: string?): string
     h = (h * 31 + string.byte(jid, i)) % 1000003
   end
   return SENDER_COLORS[(h % #SENDER_COLORS) + 1]
+end
+
+-- "+5511..." from a phone JID; "" for anything else.
+function M.phoneOf(jid: string?): string
+  local user = string.match(jid or "", "^(%d+)@s%.whatsapp%.net$")
+  return if user then "+" .. user else ""
 end
 
 -- Badge text, capped so it stays small.

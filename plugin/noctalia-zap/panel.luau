@@ -57,8 +57,8 @@ local playback = noctalia.state.get(common.KEY_PLAYBACK) or {}
 -- Phase 6: actions, replies, typing, presence, older messages.
 local selectedMsg = nil -- id of the message showing its action bar
 local replyTo = nil -- message being answered
-local typing = nil -- { from, name, state, at } for the open chat
-local typingToken = 0
+local typingBy = {} -- from -> { name, state, at } for the open chat
+local typingFadeTimer = false
 local myTyping = false
 local presenceChat = nil -- chat we are "online" in, or nil
 local drawLimit = MAX_DRAWN
@@ -173,8 +173,15 @@ local function loadHistory(jid, limit)
       addMessage(m)
     end
     -- Older live messages may predate the fresh history: keep time order.
+    -- Stable by arrival order for messages in the same second.
+    for i, m in messages do
+      m._order = i
+    end
     table.sort(messages, function(a, b)
-      return a.ts < b.ts
+      if a.ts ~= b.ts then
+        return a.ts < b.ts
+      end
+      return a._order < b._order
     end)
     scrollRev += 1
     render()
@@ -182,17 +189,56 @@ local function loadHistory(jid, limit)
 end
 
 -- Online only while a chat is open in the panel (the phone keeps notifying
--- otherwise). nil goes back offline.
-local function setPresence(jid)
-  if daemon == nil or jid == presenceChat then
+-- otherwise). The daemon holds "online" for 90 s; a single timer renews it
+-- every 30 s while the chat stays open. Calls go one at a time and the last
+-- wish wins, so a slow "online" can never land after an "offline".
+local PRESENCE_RENEW_S = "30"
+local presenceWanted = nil -- chat we want to be online in, or nil
+local presenceInFlight = false
+local presenceTimer = false
+local presenceSent = false -- last request reached the daemon with presenceWanted
+
+local function flushPresence()
+  if presenceInFlight or daemon == nil then
     return
   end
-  presenceChat = jid
+  presenceInFlight = true
+  local want = presenceWanted
   local argv = { daemon, "ctl", "presence" }
-  if jid ~= nil then
-    table.insert(argv, jid)
+  if want ~= nil then
+    table.insert(argv, want)
   end
-  noctalia.runAsync(argv, function(_r) end, 15000)
+  noctalia.runAsync(argv, function(r)
+    presenceInFlight = false
+    presenceSent = r.exitCode == 0
+    presenceChat = if presenceSent then want else nil
+    if want ~= presenceWanted then
+      flushPresence() -- the wish changed meanwhile
+    end
+  end, 15000)
+end
+
+local startPresenceTimer
+function startPresenceTimer()
+  if presenceTimer then
+    return
+  end
+  presenceTimer = true
+  noctalia.runAsync({ "sleep", PRESENCE_RENEW_S }, function(_r)
+    presenceTimer = false
+    if presenceWanted ~= nil then
+      flushPresence() -- renew the lease (or retry after a failure)
+      startPresenceTimer()
+    end
+  end, 40000)
+end
+
+local function setPresence(jid)
+  presenceWanted = jid
+  flushPresence()
+  if jid ~= nil then
+    startPresenceTimer()
+  end
 end
 
 -- My "typing" state in the open chat; paused after a few idle seconds. One
@@ -240,6 +286,28 @@ local function setMyTyping(on: boolean)
   end
 end
 
+-- Scrolls to a message. The key is cleared right after, so revealing the
+-- same message again later still works (the host only acts on changes).
+local function reveal(id: string)
+  local _, i = nil, nil
+  for idx, m in messages do
+    if m.id == id then
+      i = idx
+      break
+    end
+  end
+  if i == nil then
+    return
+  end
+  local needed = #messages - i + 1
+  if needed > drawLimit then
+    drawLimit = math.min(MAX_DRAWN_TOTAL, needed)
+  end
+  revealKey = id
+  render()
+  revealKey = nil
+end
+
 local function findMessage(id)
   for i, m in messages do
     if m.id == id then
@@ -268,7 +336,8 @@ local function react(m, emoji: string)
 end
 
 -- Reads the page of messages before the oldest one shown. When the store has
--- no more, asks the phone; its answer arrives as a "backfill" event.
+-- no more, asks the phone; its answer arrives as a "backfill" event with
+-- older = true.
 local loadOlder
 local function askPhoneForOlder(jid)
   olderPending = true
@@ -280,8 +349,8 @@ local function askPhoneForOlder(jid)
     end
     local resp = noctalia.json.decode(r.stdout or "")
     if r.exitCode ~= 0 or type(resp) ~= "table" or type(resp.data) ~= "table" or not resp.data.requested then
+      -- Offline or asked too recently: not the start of the chat, just not now.
       olderPending = false
-      hasMore = false
       render()
       return
     end
@@ -296,21 +365,24 @@ local function askPhoneForOlder(jid)
   render()
 end
 
-function loadOlder(fromPhoneAnswer: boolean?)
+function loadOlder(fromPhoneAnswer: boolean?, limit: number?, before: number?)
   if daemon == nil or selected == nil or olderLoading or #messages == 0 then
-    return
-  end
-  if drawLimit >= MAX_DRAWN_TOTAL and not fromPhoneAnswer then
     return
   end
   local jid = selected
   local oldest = messages[1]
+  limit = limit or HISTORY_LIMIT
+  before = before or oldest.ts
   olderLoading = true
-  noctalia.runAsync({ daemon, "ctl", "history", jid, tostring(HISTORY_LIMIT), "--before", tostring(oldest.ts) }, function(r)
+  noctalia.runAsync({ daemon, "ctl", "history", jid, tostring(limit), "--before", tostring(before) }, function(r)
     if selected ~= jid then
       return
     end
     olderLoading = false
+    if r.stdoutTruncated and limit > 10 then
+      loadOlder(fromPhoneAnswer, math.floor(limit / 2), before)
+      return
+    end
     local resp = noctalia.json.decode(r.stdout or "")
     if r.exitCode ~= 0 or type(resp) ~= "table" or type(resp.data) ~= "table" then
       render()
@@ -324,6 +396,11 @@ function loadOlder(fromPhoneAnswer: boolean?)
       end
     end
     if #older == 0 then
+      if #resp.data >= limit and before > 0 then
+        -- A whole page of messages we already have (same second): step past it.
+        loadOlder(fromPhoneAnswer, limit, before - 1)
+        return
+      end
       if fromPhoneAnswer then
         -- The phone answered and nothing older came: this is the start.
         hasMore = false
@@ -340,10 +417,9 @@ function loadOlder(fromPhoneAnswer: boolean?)
     end
     table.move(messages, 1, #messages, #older + 1, older)
     messages = older
-    drawLimit = math.min(MAX_DRAWN_TOTAL, drawLimit + #resp.data)
+    drawLimit = math.min(MAX_DRAWN_TOTAL, drawLimit + #older)
     -- Keep the message that was on top in view.
-    revealKey = oldest.id
-    render()
+    reveal(oldest.id)
   end, 30000)
   render()
 end
@@ -358,7 +434,7 @@ local function selectChat(jid)
   draft = ""
   composerRev += 1
   sendError = false
-  selectedMsg, replyTo, typing = nil, nil, nil
+  selectedMsg, replyTo, typingBy = nil, nil, {}
   drawLimit, hasMore, revealKey = MAX_DRAWN, true, nil
   olderLoading, olderPending = false, false
   if isOpen then
@@ -572,9 +648,7 @@ local function onMessages(value)
         changed = true
         added = true
         incoming = incoming or not m.me
-        if typing and typing.from == m.from then
-          typing = nil -- they sent it
-        end
+        typingBy[m.from] = nil -- they sent it
       end
     end
   end
@@ -1049,7 +1123,7 @@ end
 
 -- The answered message, shown on top of a reply. Clicking scrolls to it.
 local function quoteBlock(q, mine: boolean)
-  local name = if q.name ~= "" then q.name else noctalia.tr("panel.chat.you")
+  local name = if q.me then noctalia.tr("panel.chat.you") elseif q.name ~= "" then q.name else common.phoneOf(q.from)
   local preview = common.preview(q.text, q.kind)
   return ui.column({
     gap = 2,
@@ -1058,8 +1132,7 @@ local function quoteBlock(q, mine: boolean)
     fill = if mine then "on_primary_container/0.12" else "on_surface/0.08",
     onClick = function()
       if messageIds[q.id] then
-        revealKey = q.id
-        render()
+        reveal(q.id)
       end
     end,
   }, {
@@ -1067,7 +1140,7 @@ local function quoteBlock(q, mine: boolean)
       text = name,
       fontSize = style.font.caption,
       fontWeight = "medium",
-      color = if q.name == "" then "primary" else common.senderColor(q.from),
+      color = if q.me then "primary" else common.senderColor(q.from),
       maxLines = 1,
     }),
     ui.label({
@@ -1274,7 +1347,7 @@ local function messageList(group: boolean)
   local top
   if olderLoading or olderPending then
     top = ui.label({ text = noctalia.tr("panel.chat.loading_older"), fontSize = style.font.caption, color = "on_surface_variant" })
-  elseif firstDrawn > 1 or (hasMore and drawLimit < MAX_DRAWN_TOTAL) then
+  elseif drawLimit < MAX_DRAWN_TOTAL and (firstDrawn > 1 or hasMore) then
     top = ui.button({
       text = noctalia.tr("panel.chat.load_older"),
       glyph = "arrow-up",
@@ -1283,9 +1356,9 @@ local function messageList(group: boolean)
       onClick = function()
         if firstDrawn > 1 then
           -- Already loaded, just not drawn.
+          local target = messages[firstDrawn].id
           drawLimit = math.min(MAX_DRAWN_TOTAL, drawLimit + HISTORY_LIMIT)
-          revealKey = messages[firstDrawn].id
-          render()
+          reveal(target)
         else
           loadOlder()
         end
@@ -1370,7 +1443,8 @@ local function composer()
       ui.column({ flexGrow = 1 }, { quoteBlock({
         id = replyTo.id,
         from = replyTo.from,
-        name = if replyTo.me then "" else replyTo.name,
+        name = replyTo.name,
+        me = replyTo.me,
         text = replyTo.text,
         kind = replyTo.kind,
       }, false) }),
@@ -1405,7 +1479,14 @@ local function conversationPane()
   local titleParts = {
     ui.label({ text = name, fontSize = style.font.title, fontWeight = "bold", color = "on_surface", maxLines = 1 }),
   }
-  if typing ~= nil and typing.state ~= "paused" and noctalia.nowMs() - typing.at < TYPING_TIMEOUT_MS then
+  local typing = nil
+  for _, t in typingBy do
+    if t.state ~= "paused" and noctalia.nowMs() - t.at < TYPING_TIMEOUT_MS then
+      typing = t
+      break
+    end
+  end
+  if typing ~= nil then
     local key = if typing.state == "recording" then "panel.chat.recording" else "panel.chat.typing"
     local who = if common.isGroup(selected) and typing.name ~= "" then typing.name else ""
     table.insert(titleParts, ui.label({
@@ -1437,7 +1518,7 @@ local function conversationPane()
           setPresence(nil)
           selected = nil
           messages, messageIds = {}, {}
-          selectedMsg, replyTo, typing = nil, nil, nil
+          selectedMsg, replyTo, typingBy = nil, nil, {}
           publishActive()
           render()
         end,
@@ -1508,7 +1589,12 @@ function render()
 end
 
 noctalia.state.watch(common.KEY_STATUS, function(value)
+  local wasConnected = status.state == "connected"
   status = value or { state = "error", detail = "" }
+  -- The daemon goes offline on every connect: ask again for the open chat.
+  if status.state == "connected" and not wasConnected and isOpen and selected ~= nil then
+    setPresence(selected)
+  end
   render()
 end)
 noctalia.state.watch(common.KEY_QR, function(value)
@@ -1534,8 +1620,8 @@ noctalia.state.watch(common.KEY_DAEMON, function(value)
 end)
 noctalia.state.watch(common.KEY_MESSAGES, onMessages)
 noctalia.state.watch(common.KEY_BACKFILL, function(value)
-  if type(value) == "table" and value.chat == selected and olderPending then
-    -- The phone sent older messages we asked for.
+  if type(value) == "table" and value.chat == selected and value.older and olderPending then
+    -- The phone sent the older messages we asked for.
     olderPending = false
     olderToken += 1
     loadOlder(true)
@@ -1549,21 +1635,41 @@ noctalia.state.watch(common.KEY_BACKFILL, function(value)
     render()
   end
 end)
+-- Fades "typing" out without updates. One timer while anyone is typing.
+local function startTypingFade()
+  if typingFadeTimer then
+    return
+  end
+  typingFadeTimer = true
+  noctalia.runAsync({ "sleep", "3" }, function(_r)
+    typingFadeTimer = false
+    local now = noctalia.nowMs()
+    local active = false
+    for from, t in typingBy do
+      if t.state == "paused" or now - t.at >= TYPING_TIMEOUT_MS then
+        typingBy[from] = nil
+      else
+        active = true
+      end
+    end
+    render()
+    if active then
+      startTypingFade()
+    end
+  end, 10000)
+end
+
 noctalia.state.watch(common.KEY_TYPING, function(value)
   if type(value) ~= "table" or value.chat ~= selected then
     return
   end
-  typing = value
-  typingToken += 1
-  local token = typingToken
+  if value.state == "paused" then
+    typingBy[value.from or ""] = nil
+  else
+    typingBy[value.from or ""] = { name = value.name or "", state = value.state, at = value.at or noctalia.nowMs() }
+    startTypingFade()
+  end
   render()
-  -- Without new updates, "typing" fades out.
-  noctalia.runAsync({ "sleep", "9" }, function(_r)
-    if typingToken == token then
-      typing = nil
-      render()
-    end
-  end, 15000)
 end)
 noctalia.state.watch(common.KEY_PLAYBACK, function(value)
   playback = value or {}

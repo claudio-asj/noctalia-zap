@@ -63,6 +63,14 @@ type Daemon struct {
 	state    string
 	detail   string
 
+	// presMu serializes presence changes; presGen identifies the latest one
+	// and presTimer ends its lease.
+	presMu        sync.Mutex
+	presGen       uint64
+	presTimer     *time.Timer
+	presenceLease time.Duration // zero: presenceLeaseDuration
+	presenceTest  presenceAPI   // tests only
+
 	mu          sync.Mutex
 	client      *whatsmeow.Client
 	pairing     bool
@@ -70,6 +78,8 @@ type Daemon struct {
 	chatsTimer  *time.Timer
 	nameLookups map[string]bool
 	backfillAt  map[string]time.Time // chat -> last on-demand history request
+	// backfillOlder: chats whose pending on-demand request asked for older messages.
+	backfillOlder map[string]bool
 	// qrFile is the current QR image. Each code gets a new file name so image
 	// caches keyed by path (the plugin's ui.image) always show the new code.
 	qrFile string
@@ -85,6 +95,8 @@ func NewDaemon(cfg Config, container *sqlstore.Container, msgs *MsgStore, emit *
 		player:      NewPlayer(emit),
 		nameLookups: map[string]bool{},
 		backfillAt:  map[string]time.Time{},
+
+		backfillOlder: map[string]bool{},
 	}
 }
 
@@ -300,7 +312,7 @@ func (d *Daemon) handleEvent(raw any) {
 		d.scheduleChats()
 		// Stay unavailable so the phone keeps notifying; the plugin asks for
 		// presence only while a conversation is open.
-		d.setPresence(ctx, types.PresenceUnavailable)
+		go d.resetPresence()
 	case *events.Receipt:
 		d.handleReceipt(ctx, evt)
 	case *events.ChatPresence:
@@ -500,6 +512,11 @@ func (d *Daemon) handleMessage(ctx context.Context, evt *events.Message, live bo
 // emitMessage announces a new message, with the text cut to keep the line short.
 func (d *Daemon) emitMessage(ctx context.Context, msg Message, backlog bool) {
 	msg.Raw = nil
+	if msg.Quote != nil {
+		q := *msg.Quote // do not alter the caller's copy
+		msg.Quote = &q
+		d.fillQuoteNames(ctx, []Message{msg})
+	}
 	ev := MessageEvent{Type: "message", Message: msg, Backlog: backlog}
 	ev.Muted = d.isMuted(ctx, msg.Chat)
 	ev.Name, _ = clip(msg.Name, maxPreviewText)
@@ -616,10 +633,17 @@ func (d *Daemon) handleHistory(ctx context.Context, evt *events.HistorySync) {
 			apply()
 		}
 		if onDemand {
-			// Fetch the previews the resend left out, then tell the plugin.
+			// Tell the plugin right away, then fetch the previews the resend left out.
 			key := jid.String()
-			go d.fetchMissingThumbs(key, func() {
-				d.emit.Emit(BackfillEvent{Type: "backfill", Chat: key})
+			d.mu.Lock()
+			older := d.backfillOlder[key]
+			delete(d.backfillOlder, key)
+			d.mu.Unlock()
+			d.emit.Emit(BackfillEvent{Type: "backfill", Chat: key, Older: &older})
+			go d.fetchMissingThumbs(key, func(wrote bool) {
+				if wrote {
+					d.emit.Emit(BackfillEvent{Type: "backfill", Chat: key, Thumbs: true})
+				}
 			})
 		} else if err := d.store.SetUnread(ctx, jid.String(), int(conv.GetUnreadCount())); err != nil {
 			log.Printf("history: unread: %v", err)
@@ -897,7 +921,7 @@ func (d *Daemon) cmdSend(ctx context.Context, req Request) Response {
 		if err != nil {
 			return fail(err)
 		}
-		if !found {
+		if !found || orig.Deleted {
 			return Response{Error: "not_found"}
 		}
 		participant := orig.From
@@ -917,7 +941,7 @@ func (d *Daemon) cmdSend(ctx context.Context, req Request) Response {
 		if quote.Kind == "" {
 			quote.Kind = KindText
 		}
-		d.fillQuoteNames(ctx, []Message{{Quote: quote}})
+		quote.Me = orig.Me
 	}
 	sctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
@@ -1095,9 +1119,15 @@ func (d *Daemon) cmdBackfill(ctx context.Context, req Request) Response {
 		ID:            id,
 		Timestamp:     time.Unix(ts, 0),
 	}
+	d.mu.Lock()
+	d.backfillOlder[key] = req.Older
+	d.mu.Unlock()
 	sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if _, err := c.SendPeerMessage(sctx, c.BuildHistorySyncRequest(info, d.cfg.HistoryLimit)); err != nil {
+		d.mu.Lock()
+		delete(d.backfillOlder, key)
+		d.mu.Unlock()
 		log.Printf("backfill request failed: %v", err)
 		return Response{Error: "backfill failed"}
 	}

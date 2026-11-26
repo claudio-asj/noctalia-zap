@@ -109,6 +109,11 @@ func (d *Daemon) revokeMessage(ctx context.Context, chat, id string, live bool) 
 	if id == "" {
 		return
 	}
+	old, found, err := d.store.Lookup(ctx, chat, id)
+	if err != nil {
+		log.Printf("apply revoke: %v", err)
+		return
+	}
 	changed, err := d.store.ApplyRevoke(ctx, chat, id)
 	if err != nil {
 		log.Printf("apply revoke: %v", err)
@@ -116,6 +121,10 @@ func (d *Daemon) revokeMessage(ctx context.Context, chat, id string, live bool) 
 	}
 	if !changed {
 		return
+	}
+	if found {
+		// Only the cache and previews; a file saved in the user's downloads stays.
+		removeMessageCache(d.cfg.DataDir, chat, id, old.Kind)
 	}
 	d.scheduleChats()
 	if live {
@@ -216,8 +225,9 @@ func (d *Daemon) isSelf(jid types.JID) bool {
 	return !lid.IsEmpty() && jid.User == lid.User
 }
 
-// fillQuoteNames resolves Quote.Name: empty for my own messages, otherwise
-// the contact name or the push name stored with the quoted message.
+// fillQuoteNames resolves Quote.Me and Quote.Name: the contact name, else the
+// push name stored with the quoted message, else +phone. Name stays empty
+// when the quoted message is mine.
 func (d *Daemon) fillQuoteNames(ctx context.Context, msgs []Message) {
 	for i := range msgs {
 		q := msgs[i].Quote
@@ -226,16 +236,22 @@ func (d *Daemon) fillQuoteNames(ctx context.Context, msgs []Message) {
 		}
 		q.Name = ""
 		jid, err := types.ParseJID(q.From)
-		if err != nil || jid.IsEmpty() || d.isSelf(jid) {
+		if err != nil || jid.IsEmpty() {
 			continue
 		}
-		if n := d.contactName(ctx, jid); n != "" {
-			q.Name, _ = clip(n, maxPreviewText)
+		if d.isSelf(jid) {
+			q.Me = true
 			continue
 		}
-		if n := d.store.MessageName(ctx, msgs[i].Chat, q.ID); n != "" {
-			q.Name, _ = clip(n, maxPreviewText)
+		q.Me = false
+		name := d.contactName(ctx, jid)
+		if name == "" && d.store != nil {
+			name = d.store.MessageName(ctx, msgs[i].Chat, q.ID)
 		}
+		if name == "" {
+			name = fallbackName(q.From)
+		}
+		q.Name, _ = clip(name, maxPreviewText)
 	}
 }
 
@@ -253,6 +269,10 @@ func (d *Daemon) handleReceipt(ctx context.Context, evt *events.Receipt) {
 	}
 	if ignoredChat(evt.Chat) || len(evt.MessageIDs) == 0 {
 		return
+	}
+	// Groups: no participant counting yet, so the ack stops at delivered.
+	if evt.Chat.Server == types.GroupServer && level > ackDelivered {
+		level, name = ackDelivered, "delivered"
 	}
 	chat := d.chatKey(ctx, evt.Chat).String()
 	ids := make([]string, len(evt.MessageIDs))
@@ -292,18 +312,6 @@ func (d *Daemon) handleChatPresence(ctx context.Context, evt *events.ChatPresenc
 	})
 }
 
-func (d *Daemon) setPresence(ctx context.Context, state types.Presence) {
-	c := d.getClient()
-	if c == nil {
-		return
-	}
-	pctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	if err := c.SendPresence(pctx, state); err != nil {
-		log.Printf("send presence %s: %v", state, err)
-	}
-}
-
 func (d *Daemon) cmdReact(ctx context.Context, req Request) Response {
 	jid, err := d.parseChat(ctx, req.Chat)
 	if err != nil {
@@ -319,7 +327,7 @@ func (d *Daemon) cmdReact(ctx context.Context, req Request) Response {
 	if err != nil {
 		return fail(err)
 	}
-	if !found {
+	if !found || orig.Deleted {
 		return Response{Error: "not_found"}
 	}
 	c, _, err := d.connectedClient()
@@ -343,37 +351,114 @@ func (d *Daemon) cmdReact(ctx context.Context, req Request) Response {
 	return Response{OK: true}
 }
 
-// cmdPresence marks the account online and subscribes to the typing state of
-// one chat, or (without a chat) goes back to unavailable.
-func (d *Daemon) cmdPresence(ctx context.Context, req Request) Response {
+// presenceLeaseDuration is how long `presence <jid>` keeps the account online
+// unless renewed. Staying available stops the phone from notifying, so it
+// must never outlive the open conversation.
+const presenceLeaseDuration = 90 * time.Second
+
+// presenceAPI is the part of the whatsmeow client the presence commands use.
+type presenceAPI interface {
+	SendPresence(ctx context.Context, state types.Presence) error
+	SubscribePresence(ctx context.Context, jid types.JID) error
+}
+
+func (d *Daemon) presenceClient() (presenceAPI, error) {
+	if d.presenceTest != nil {
+		return d.presenceTest, nil
+	}
 	c, _, err := d.connectedClient()
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// sendUnavailable goes offline and ends any lease. The caller holds d.presMu.
+func (d *Daemon) sendUnavailable(api presenceAPI) error {
+	d.presGen++
+	if d.presTimer != nil {
+		d.presTimer.Stop()
+		d.presTimer = nil
+	}
+	pctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	return api.SendPresence(pctx, types.PresenceUnavailable)
+}
+
+// resetPresence is used on (re)connection: unavailable, no lease.
+func (d *Daemon) resetPresence() {
+	c := d.getClient()
+	if c == nil {
+		return
+	}
+	d.presMu.Lock()
+	defer d.presMu.Unlock()
+	var api presenceAPI = c
+	if d.presenceTest != nil {
+		api = d.presenceTest
+	}
+	if err := d.sendUnavailable(api); err != nil {
+		log.Printf("send presence: %v", err)
+	}
+}
+
+// cmdPresence marks the account online (a lease that each call renews) and
+// subscribes to the typing state of one chat, or, without a chat, goes back to
+// unavailable. Requests are serialized, so the last one wins; when the lease
+// expires the account goes unavailable by itself.
+func (d *Daemon) cmdPresence(ctx context.Context, req Request) Response {
+	var jid types.JID
+	if req.Chat != "" {
+		var err error
+		if jid, err = d.parseChat(ctx, req.Chat); err != nil {
+			return fail(err)
+		}
+	}
+	api, err := d.presenceClient()
 	if err != nil {
 		return fail(err)
 	}
-	pctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
+	d.presMu.Lock()
+	defer d.presMu.Unlock()
 	if req.Chat == "" {
-		if err := c.SendPresence(pctx, types.PresenceUnavailable); err != nil {
+		if err := d.sendUnavailable(api); err != nil {
 			log.Printf("presence: %v", err)
 			return Response{Error: "presence failed"}
 		}
 		return Response{OK: true}
 	}
-	jid, err := d.parseChat(ctx, req.Chat)
-	if err != nil {
-		return fail(err)
+	d.presGen++
+	gen := d.presGen
+	if d.presTimer != nil {
+		d.presTimer.Stop()
+		d.presTimer = nil
 	}
-	if err := c.SendPresence(pctx, types.PresenceAvailable); err != nil {
+	pctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if err := api.SendPresence(pctx, types.PresenceAvailable); err != nil {
 		log.Printf("presence: %v", err)
 		return Response{Error: "presence failed"}
 	}
 	// Groups send their typing state without a subscription.
 	if jid.Server != types.GroupServer {
-		if err := c.SubscribePresence(pctx, jid); err != nil {
+		if err := api.SubscribePresence(pctx, jid); err != nil {
 			log.Printf("subscribe presence: %v", err)
-			return Response{Error: "presence failed"}
 		}
 	}
+	lease := d.presenceLease
+	if lease <= 0 {
+		lease = presenceLeaseDuration
+	}
+	d.presTimer = time.AfterFunc(lease, func() {
+		d.presMu.Lock()
+		defer d.presMu.Unlock()
+		if d.presGen != gen {
+			return // renewed or cancelled meanwhile
+		}
+		if err := d.sendUnavailable(api); err != nil {
+			log.Printf("presence lease end: %v", err)
+		}
+	})
 	return Response{OK: true}
 }
 

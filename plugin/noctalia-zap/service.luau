@@ -243,7 +243,12 @@ local function onLine(line: string)
       at = noctalia.nowMs(),
     })
   elseif event.type == "backfill" then
-    noctalia.state.set(common.KEY_BACKFILL, { chat = event.chat or "", at = noctalia.nowMs() })
+    noctalia.state.set(common.KEY_BACKFILL, {
+      chat = event.chat or "",
+      older = event.older == true,
+      thumbs = event.thumbs == true,
+      at = noctalia.nowMs(),
+    })
   elseif event.type == "playback" then
     noctalia.state.set(common.KEY_PLAYBACK, {
       chat = event.chat or "",

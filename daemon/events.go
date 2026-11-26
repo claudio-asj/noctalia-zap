@@ -70,6 +70,8 @@ type Quote struct {
 	Name string `json:"name"`
 	Text string `json:"text"`
 	Kind string `json:"kind"`
+	// Me is true when the quoted message is mine (Name is then empty).
+	Me bool `json:"me,omitempty"`
 }
 
 // Reaction is one emoji with how many people used it; Me says I am one of them.
@@ -153,9 +155,14 @@ type MessageEvent struct {
 }
 
 // BackfillEvent says that the phone answered a backfill request for a chat.
+// It is sent once right after the history is applied (Older says whether the
+// request was for older messages) and again with Thumbs when previews were
+// downloaded afterwards.
 type BackfillEvent struct {
-	Type string `json:"type"` // "backfill"
-	Chat string `json:"chat"`
+	Type   string `json:"type"` // "backfill"
+	Chat   string `json:"chat"`
+	Older  *bool  `json:"older,omitempty"`
+	Thumbs bool   `json:"thumbs,omitempty"`
 }
 
 // Status states.
