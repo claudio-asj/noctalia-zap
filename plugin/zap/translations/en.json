@@ -150,6 +150,10 @@
       "label": "noctalia-zapd path",
       "description": "Full path to the helper. Leave empty to look in PATH and ~/.local/bin."
     },
+    "demo": {
+      "label": "Demo mode",
+      "description": "Show made-up chats and messages without connecting to WhatsApp. Your real session is not touched."
+    },
     "panel_size": {
       "label": "Panel size",
       "description": "Size of the window that opens from the bar.",

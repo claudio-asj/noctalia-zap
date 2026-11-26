@@ -524,8 +524,13 @@ func (d *Daemon) emitMessage(ctx context.Context, msg Message, backlog bool) {
 		msg.Quote = &q
 		d.fillQuoteNames(ctx, []Message{msg})
 	}
-	ev := MessageEvent{Type: "message", Message: msg, Backlog: backlog}
-	ev.Muted = d.isMuted(ctx, msg.Chat)
+	d.emit.Emit(buildMessageEvent(msg, backlog, d.isMuted(ctx, msg.Chat)))
+}
+
+// buildMessageEvent prepares the message event of a message: name and text cut
+// until the encoded line fits.
+func buildMessageEvent(msg Message, backlog, muted bool) MessageEvent {
+	ev := MessageEvent{Type: "message", Message: msg, Backlog: backlog, Muted: muted}
 	ev.Name, _ = clip(msg.Name, maxPreviewText)
 	// JSON escaping can grow the text a lot (quotes, newlines, control
 	// characters), so measure the encoded line and cut until it fits.
@@ -538,7 +543,7 @@ func (d *Daemon) emitMessage(ctx context.Context, msg Message, backlog bool) {
 		}
 		limit /= 2
 	}
-	d.emit.Emit(ev)
+	return ev
 }
 
 // buildUpdate prepares the update event of a message: text cut and reactions

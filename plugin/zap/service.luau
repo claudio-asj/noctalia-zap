@@ -286,6 +286,7 @@ local function configKey(): string
     tostring(noctalia.getConfig("history_limit")),
     tostring(noctalia.getConfig("media_cache_mb")),
     tostring(noctalia.getConfig("download_dir")),
+    tostring(noctalia.getConfig("demo") == true),
   }, "\0")
 end
 
@@ -304,12 +305,21 @@ local function startDaemon()
   local limit = tonumber(noctalia.getConfig("history_limit")) or 50
   local cacheMb = tonumber(noctalia.getConfig("media_cache_mb")) or 500
   local downloadDir = noctalia.getConfig("download_dir")
+  local demo = noctalia.getConfig("demo") == true
+  local runDir = dataDir
+  if demo then
+    -- Demo data lives apart from the real session.
+    runDir = dataDir .. "/demo"
+    noctalia.mkdirAll(runDir)
+  end
   -- runStream only takes a shell string: only settings and the data dir go
   -- in, each quoted. Nothing from messages ever reaches a command line here.
   local cmd = "exec "
     .. shellQuote(binary)
-    .. " run -data "
-    .. shellQuote(dataDir)
+    .. " run "
+    .. (if demo then "-demo " else "")
+    .. "-data "
+    .. shellQuote(runDir)
     .. " -history-limit "
     .. tostring(math.floor(limit))
     .. " -media-cache-mb "

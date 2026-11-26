@@ -150,6 +150,10 @@
       "label": "Caminho do noctalia-zapd",
       "description": "Caminho completo do auxiliar. Deixe vazio para procurar no PATH e em ~/.local/bin."
     },
+    "demo": {
+      "label": "Modo demonstração",
+      "description": "Mostra conversas e mensagens fictícias sem conectar ao WhatsApp. A sessão real não é alterada."
+    },
     "panel_size": {
       "label": "Tamanho do painel",
       "description": "Tamanho da janela que abre pela barra.",

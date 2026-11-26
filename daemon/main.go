@@ -50,7 +50,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `usage:
-  noctalia-zapd run -data DIR [-socket PATH] [-history-limit N] [-download-dir DIR] [-media-cache-mb N] [-qr-terminal] [-log-level LEVEL]
+  noctalia-zapd run [-demo] -data DIR [-socket PATH] [-history-limit N] [-download-dir DIR] [-media-cache-mb N] [-qr-terminal] [-log-level LEVEL]
   noctalia-zapd ctl [-socket PATH] <command> [args]
   noctalia-zapd version
 
@@ -67,6 +67,7 @@ func cmdRun(args []string) int {
 	mediaCacheMB := fs.Int("media-cache-mb", 500, "size limit in MiB of the audio cache")
 	qrTerminal := fs.Bool("qr-terminal", false, "also print the QR code to stderr")
 	logLevel := fs.String("log-level", "warn", "whatsmeow log level (debug, info, warn, error)")
+	demo := fs.Bool("demo", false, "serve fictional conversations; no WhatsApp session, no network")
 	_ = fs.Parse(args)
 
 	if *dataDir == "" {
@@ -115,6 +116,10 @@ func cmdRun(args []string) int {
 	defer cancel()
 
 	emit := NewEmitter(os.Stdout)
+
+	if *demo {
+		return runDemo(ctx, cancel, dir, *socket, emit)
+	}
 
 	waLogger := newWALogger(*logLevel)
 	store.DeviceProps.Os = proto.String("Noctalia Zap")

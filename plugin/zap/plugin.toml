@@ -122,3 +122,11 @@ label_key = "settings.daemon_path.label"
 description_key = "settings.daemon_path.description"
 default = ""
 advanced = true
+
+[[setting]]
+key = "demo"
+type = "bool"
+label_key = "settings.demo.label"
+description_key = "settings.demo.description"
+default = false
+advanced = true
