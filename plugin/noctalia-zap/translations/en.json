@@ -118,6 +118,23 @@
       "failed": "Could not download.",
       "not_stored": "This media was saved before downloads were supported. Open it on the phone.",
       "play_sound": "Play sound"
+    },
+    "compose": {
+      "attach": "Attach a file",
+      "paste": "Paste image",
+      "record": "Record a voice note",
+      "remove": "Remove attachment",
+      "cancel_record": "Discard recording",
+      "send_record": "Send voice note",
+      "no_portal": "No file chooser available. Install xdg-desktop-portal.",
+      "busy": "Already in use. Close the other window first.",
+      "no_wl_paste": "Install wl-clipboard to paste images.",
+      "no_image": "No image in the clipboard.",
+      "no_recorder": "Install pipewire to record audio.",
+      "no_ffmpeg": "Install ffmpeg to record audio.",
+      "too_large": "The file is too big. The limit is 100 MB.",
+      "send_failed": "The file was not sent.",
+      "failed": "Something went wrong. Try again."
     }
   },
   "settings": {

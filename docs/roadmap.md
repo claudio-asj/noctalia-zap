@@ -47,9 +47,13 @@ Estrutura, AGENTS.md (agnóstico de ferramenta), papéis de agentes, arquitetura
 - **Pronto quando:** responder, reagir e ver "digitando…" com um contato real ✅ (testado em 2026-11-26)
 
 ## Fase 7: Enviar mídia
-- [ ] Colar imagem da área de transferência
-- [ ] Anexar arquivo (portal ou zenity, a confirmar)
-- [ ] Gravar áudio (`pw-record`)
+- [x] Anexar arquivo pelo seletor do sistema (portal FileChooser via D-Bus)
+- [x] Colar imagem da área de transferência (precisa do `wl-clipboard`)
+- [x] Gravar áudio de voz (`pw-record` + `ffmpeg` para Opus)
+- [x] Foto, vídeo, áudio e documento com legenda e resposta; miniatura e duração
+- [x] Barra de progresso do áudio tocando
+- [x] Busca limpa ao escolher a conversa, que continua aberta
+- **Pronto quando:** enviar foto, documento e áudio gravado pelo painel
 
 ## Fase 8: Busca e atalhos
 - [ ] Busca no texto das mensagens (SQLite FTS5, local)

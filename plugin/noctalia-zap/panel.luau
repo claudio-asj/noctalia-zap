@@ -51,6 +51,38 @@ local sending = false
 local sendError = false
 local scrollRev = 0
 
+-- Phase 7: attachments and voice notes.
+local attachment = nil -- absolute path of the pending file
+local composeError = nil -- translation key shown under the composer
+local picking = false -- the file chooser is open
+local pasting = false
+local recording = false
+local recStartMs = 0
+local stopping = false -- waiting for "record stop"
+local tickTimer = false -- the 1 s clock (recording time, audio progress)
+local initialPicked = noctalia.state.get(common.KEY_PICKED) or {}
+local initialRec = noctalia.state.get(common.KEY_RECORDING) or {}
+local initialFailed = noctalia.state.get(common.KEY_SEND_FAILED) or {}
+local lastPickedAt = initialPicked.at or 0
+local lastRecAt = initialRec.at or 0
+local lastFailedAt = initialFailed.at or 0
+if initialRec.recording == true then
+  recording, recStartMs = true, initialRec.started_ms or noctalia.nowMs()
+end
+-- Daemon error -> translation key.
+local COMPOSE_ERRORS = {
+  no_portal = "panel.compose.no_portal",
+  busy = "panel.compose.busy",
+  no_wl_paste = "panel.compose.no_wl_paste",
+  no_image = "panel.compose.no_image",
+  no_recorder = "panel.compose.no_recorder",
+  no_ffmpeg = "panel.compose.no_ffmpeg",
+  too_large = "panel.compose.too_large",
+  send_failed = "panel.compose.send_failed",
+  already_recording = "panel.compose.busy",
+}
+local IMAGE_EXT = { png = true, jpg = true, jpeg = true, webp = true, gif = true }
+
 -- Media: per message id.
 local mediaBusy = {} -- id -> true while downloading
 local mediaError = {} -- id -> translation key of the last error
@@ -99,6 +131,41 @@ local function ctl(args: { string }, onDone: ((boolean) -> ())?)
     end
     render()
   end, 30000)
+end
+
+-- Runs a daemon command and hands over the decoded answer. Unlike ctl(), it
+-- does not share the busy flag: picking and recording must not block sends.
+local function daemonCall(args: { string }, onDone: (boolean, any, boolean) -> ())
+  if daemon == nil then
+    return
+  end
+  local argv = { daemon, "ctl" }
+  for _, a in args do
+    table.insert(argv, a)
+  end
+  noctalia.runAsync(argv, function(r)
+    local resp = noctalia.json.decode(r.stdout or "")
+    onDone(r.exitCode == 0, resp, r.timedOut == true)
+  end, 55000)
+end
+
+local function errorKey(resp): string
+  local err = if type(resp) == "table" then resp.error else nil
+  return COMPOSE_ERRORS[err or ""] or "panel.compose.failed"
+end
+
+-- One timer at a time, only while something plays or records and the panel is
+-- open. Each tick redraws the clock and the audio progress.
+local function ensureTick()
+  if tickTimer or not isOpen or not (recording or playback.playing == true) then
+    return
+  end
+  tickTimer = true
+  noctalia.runAsync({ "sleep", "1" }, function(_r)
+    tickTimer = false
+    render()
+    ensureTick()
+  end, 5000)
 end
 
 -- ── Conversation ──────────────────────────────────────────────────────────
@@ -436,6 +503,7 @@ local function selectChat(jid)
   draft = ""
   composerRev += 1
   sendError = false
+  attachment, composeError = nil, nil
   selectedMsg, replyTo, typingBy = nil, nil, {}
   drawLimit, hasMore, revealKey = MAX_DRAWN, true, nil
   olderLoading, olderPending = false, false
@@ -482,23 +550,39 @@ local function selectChat(jid)
   render()
 end
 
-local function send()
-  local text = noctalia.string.trim(draft)
-  if text == "" or sending or selected == nil or daemon == nil or dataDir == nil then
+-- Sends the draft, the pending attachment, or `voice` (a recorded note).
+local function send(voice: string?)
+  local text = if voice then "" else noctalia.string.trim(draft)
+  local media = voice or attachment
+  if (text == "" and media == nil) or sending or selected == nil or daemon == nil or dataDir == nil then
     return
   end
-  -- The text goes through a file in the private data dir, never argv.
-  local path = `{dataDir}/outbox-{math.floor(noctalia.nowMs())}.txt`
-  local ok = noctalia.writeFile(path, text)
-  if not ok then
-    sendError = true
-    render()
-    return
+  -- The caption or text goes through a file in the private data dir, never argv.
+  local path = nil
+  if text ~= "" then
+    path = `{dataDir}/outbox-{math.floor(noctalia.nowMs())}.txt`
+    if not noctalia.writeFile(path, text) then
+      sendError = true
+      render()
+      return
+    end
   end
   sending = true
   sendError = false
+  composeError = nil
   local jid = selected
-  local argv = { daemon, "ctl", "send", jid, "--file", path }
+  local argv = { daemon, "ctl", "send", jid }
+  if media ~= nil then
+    table.insert(argv, "--media")
+    table.insert(argv, media)
+    if voice then
+      table.insert(argv, "--ptt")
+    end
+  end
+  if path ~= nil then
+    table.insert(argv, "--file")
+    table.insert(argv, path)
+  end
   if replyTo ~= nil and replyTo.id ~= "" then
     table.insert(argv, "--reply")
     table.insert(argv, replyTo.id)
@@ -506,18 +590,106 @@ local function send()
   setMyTyping(false)
   noctalia.runAsync(argv, function(r)
     sending = false
-    noctalia.removeFile(path) -- ctl removes it; this covers early failures
-    if r.exitCode == 0 then
+    if path ~= nil then
+      noctalia.removeFile(path) -- ctl removes it; this covers early failures
+    end
+    -- A timeout is not a failure: a big upload goes on in the daemon and the
+    -- result arrives as an event.
+    if r.exitCode == 0 or r.timedOut == true then
       if selected == jid then
         draft = ""
         replyTo = nil
+        if not voice then
+          attachment = nil
+        end
         composerRev += 1 -- a new key empties the uncontrolled input
       end
     else
-      sendError = true
+      local resp = noctalia.json.decode(r.stdout or "")
+      if type(resp) == "table" and COMPOSE_ERRORS[resp.error or ""] then
+        composeError = errorKey(resp)
+      else
+        sendError = true
+      end
     end
     render()
   end, 60000)
+  render()
+end
+
+local function pickFile()
+  if picking or recording then
+    return
+  end
+  picking = true
+  composeError = nil
+  daemonCall({ "pick" }, function(ok, resp)
+    if not ok then
+      picking = false
+      composeError = errorKey(resp)
+    end
+    render()
+  end)
+end
+
+local function pasteImage()
+  if pasting or recording then
+    return
+  end
+  pasting = true
+  composeError = nil
+  daemonCall({ "paste" }, function(ok, resp)
+    pasting = false
+    if ok and type(resp) == "table" and type(resp.data) == "table" and type(resp.data.path) == "string" then
+      attachment = resp.data.path
+    else
+      composeError = errorKey(resp)
+    end
+    render()
+  end)
+  render()
+end
+
+local function startRecording()
+  if recording or stopping then
+    return
+  end
+  composeError = nil
+  daemonCall({ "record", "start" }, function(ok, resp)
+    if ok then
+      recording, recStartMs = true, noctalia.nowMs()
+      ensureTick()
+    else
+      composeError = errorKey(resp)
+    end
+    render()
+  end)
+end
+
+local function cancelRecording()
+  if not recording or stopping then
+    return
+  end
+  recording = false
+  daemonCall({ "record", "cancel" }, function(_ok, _resp) end)
+  render()
+end
+
+local function finishRecording()
+  if not recording or stopping then
+    return
+  end
+  stopping = true
+  daemonCall({ "record", "stop" }, function(ok, resp)
+    stopping = false
+    recording = false
+    if ok and type(resp) == "table" and type(resp.data) == "table" and type(resp.data.path) == "string" then
+      send(resp.data.path)
+    else
+      composeError = errorKey(resp)
+    end
+    render()
+  end)
   render()
 end
 
@@ -995,7 +1167,18 @@ local function mediaBody(m, textColor: string)
 
   if m.kind == "audio" then
     local playing = isPlaying(m)
-    table.insert(parts, ui.row({ gap = style.gap.md, align = "center" }, {
+    local total = if playback.seconds and playback.seconds > 0 then playback.seconds else media.seconds
+    local elapsed = 0
+    if playing and (playback.started_ms or 0) > 0 then
+      elapsed = math.max(0, (noctalia.nowMs() - playback.started_ms) / 1000)
+    end
+    local label = common.duration(media.seconds)
+    if busy then
+      label = noctalia.tr("panel.media.loading")
+    elseif playing then
+      label = `{common.duration(elapsed)} / {common.duration(total)}`
+    end
+    local audioRow = {
       ui.button({
         glyph = if playing then "player-stop" else "player-play",
         variant = "ghost",
@@ -1008,11 +1191,23 @@ local function mediaBody(m, textColor: string)
       }),
       ui.glyph({ name = if media.ptt then "microphone" else "music", size = 14, color = textColor }),
       ui.label({
-        text = if busy then noctalia.tr("panel.media.loading") else common.duration(media.seconds),
+        text = label,
         fontSize = style.font.body,
         color = textColor,
       }),
-    }))
+    }
+    if playing and total > 0 then
+      table.insert(audioRow, ui.progress({
+        key = "audio-progress-" .. m.id,
+        progress = math.max(0, math.min(1, elapsed / total)),
+        fill = if m.me then "on_primary_container" else "primary",
+        track = "outline_variant",
+        height = 4,
+        radius = 2,
+        width = 80,
+      }))
+    end
+    table.insert(parts, ui.row({ gap = style.gap.md, align = "center" }, audioRow))
   elseif m.kind == "document" then
     local details = {}
     if media.size > 0 then
@@ -1419,47 +1614,157 @@ local function messageList(group: boolean)
   }, rows)
 end
 
-local function composer()
-  local connected = status.state == "connected"
-  local children = {
-    ui.input({
-      key = "composer-" .. composerRev,
-      placeholder = noctalia.tr(if connected then "panel.chat.placeholder" else "panel.chat.offline"),
-      multiline = true,
-      submitOnEnter = true,
-      frameVisible = false,
+local function attachmentChip()
+  local name = string.match(attachment, "([^/]+)$") or attachment
+  local ext = string.lower(string.match(name, "%.([^.]+)$") or "")
+  local lead
+  if IMAGE_EXT[ext] then
+    lead = ui.image({
+      key = "attach-" .. attachment,
+      path = attachment,
+      width = 40,
+      height = 40,
+      fit = "cover",
+      radius = style.radius.control,
+    })
+  else
+    lead = ui.glyph({ name = "file", size = 24, color = "on_surface_variant" })
+  end
+  return ui.row({ gap = style.gap.md, align = "center" }, {
+    lead,
+    ui.label({
+      text = name,
+      fontSize = style.font.body,
+      color = "on_surface",
+      maxLines = 1,
       flexGrow = 1,
-      focus = true,
-      enabled = connected and not sending,
-      onChange = function(text)
-        draft = text
-        setMyTyping(text ~= "")
-      end,
-      onSubmit = function(text)
-        draft = text
-        send()
-      end,
     }),
     ui.button({
-      glyph = "send",
-      variant = "primary",
-      tooltip = noctalia.tr("panel.chat.send"),
-      enabled = connected and not sending,
+      glyph = "x",
+      variant = "ghost",
+      controlSize = "sm",
+      tooltip = noctalia.tr("panel.compose.remove"),
       onClick = function()
-        send()
+        attachment = nil
+        render()
       end,
     }),
-  }
-  local box = ui.row({
+  })
+end
+
+local function recordingBar()
+  local elapsed = math.max(0, (noctalia.nowMs() - recStartMs) / 1000)
+  return ui.row({
     gap = style.gap.md,
     padding = style.padding.sm,
     radius = style.radius.card,
     fill = "surface_container_highest",
     align = "center",
-  }, children)
+  }, {
+    ui.box({ width = 10, height = 10, radius = 5, fill = "error" }),
+    ui.label({
+      text = common.duration(elapsed),
+      fontSize = style.font.body,
+      color = "on_surface",
+      flexGrow = 1,
+    }),
+    ui.button({
+      glyph = "x",
+      variant = "ghost",
+      tooltip = noctalia.tr("panel.compose.cancel_record"),
+      enabled = not stopping,
+      onClick = function()
+        cancelRecording()
+      end,
+    }),
+    ui.button({
+      glyph = "send",
+      variant = "primary",
+      tooltip = noctalia.tr("panel.compose.send_record"),
+      enabled = not stopping and not sending,
+      onClick = function()
+        finishRecording()
+      end,
+    }),
+  })
+end
+
+local function composer()
+  local connected = status.state == "connected"
+  local box
+  if recording then
+    box = recordingBar()
+  else
+    local canSend = connected and not sending
+    box = ui.row({
+      gap = style.gap.md,
+      padding = style.padding.sm,
+      radius = style.radius.card,
+      fill = "surface_container_highest",
+      align = "center",
+    }, {
+      ui.button({
+        glyph = "paperclip",
+        variant = "ghost",
+        tooltip = noctalia.tr("panel.compose.attach"),
+        enabled = canSend and not picking,
+        onClick = function()
+          pickFile()
+        end,
+      }),
+      ui.button({
+        glyph = "clipboard",
+        variant = "ghost",
+        tooltip = noctalia.tr("panel.compose.paste"),
+        enabled = canSend and not pasting,
+        onClick = function()
+          pasteImage()
+        end,
+      }),
+      ui.input({
+        key = "composer-" .. composerRev,
+        placeholder = noctalia.tr(if connected then "panel.chat.placeholder" else "panel.chat.offline"),
+        multiline = true,
+        submitOnEnter = true,
+        frameVisible = false,
+        flexGrow = 1,
+        focus = true,
+        enabled = canSend,
+        onChange = function(text)
+          draft = text
+          setMyTyping(text ~= "")
+        end,
+        onSubmit = function(text)
+          draft = text
+          send()
+        end,
+      }),
+      ui.button({
+        glyph = "microphone",
+        variant = "ghost",
+        tooltip = noctalia.tr("panel.compose.record"),
+        enabled = canSend and attachment == nil,
+        onClick = function()
+          startRecording()
+        end,
+      }),
+      ui.button({
+        glyph = "send",
+        variant = "primary",
+        tooltip = noctalia.tr("panel.chat.send"),
+        enabled = canSend,
+        onClick = function()
+          send()
+        end,
+      }),
+    })
+  end
   local parts = {}
   if sendError then
     table.insert(parts, ui.label({ text = noctalia.tr("panel.chat.send_error"), fontSize = style.font.caption, color = "error" }))
+  end
+  if composeError ~= nil then
+    table.insert(parts, ui.label({ text = noctalia.tr(composeError), fontSize = style.font.caption, color = "error" }))
   end
   if replyTo ~= nil then
     table.insert(parts, ui.row({ gap = style.gap.sm, align = "center" }, {
@@ -1483,6 +1788,9 @@ local function composer()
         end,
       }),
     }))
+  end
+  if attachment ~= nil and not recording then
+    table.insert(parts, attachmentChip())
   end
   if #parts == 0 then
     return box
@@ -1697,7 +2005,47 @@ noctalia.state.watch(common.KEY_TYPING, function(value)
 end)
 noctalia.state.watch(common.KEY_PLAYBACK, function(value)
   playback = value or {}
+  ensureTick()
   render()
+end)
+noctalia.state.watch(common.KEY_PICKED, function(value)
+  if type(value) ~= "table" or (value.at or 0) <= lastPickedAt then
+    return
+  end
+  lastPickedAt = value.at
+  picking = false
+  if type(value.path) == "string" and value.path ~= "" and not value.cancelled then
+    attachment = value.path
+  end
+  render()
+end)
+noctalia.state.watch(common.KEY_RECORDING, function(value)
+  if type(value) ~= "table" then
+    return
+  end
+  local fresh = (value.at or 0) > lastRecAt
+  lastRecAt = math.max(lastRecAt, value.at or 0)
+  if value.recording == true then
+    recording, recStartMs = true, value.started_ms or noctalia.nowMs()
+    ensureTick()
+  else
+    recording = false
+    -- The recorder stopped by itself: keep the file, do not send it.
+    if fresh and not stopping and type(value.path) == "string" and value.path ~= "" then
+      attachment = value.path
+    end
+  end
+  render()
+end)
+noctalia.state.watch(common.KEY_SEND_FAILED, function(value)
+  if type(value) ~= "table" or (value.at or 0) <= lastFailedAt then
+    return
+  end
+  lastFailedAt = value.at
+  if value.chat == selected then
+    composeError = errorKey({ error = if COMPOSE_ERRORS[value.error or ""] then value.error else "send_failed" })
+    render()
+  end
 end)
 
 -- A notification asked to open a chat.
@@ -1717,6 +2065,7 @@ function onOpen(_context)
   composerRev += 1
   cleanOutbox()
   noctalia.state.set(common.KEY_PANEL_OPEN, true)
+  ensureTick()
   publishActive()
   if selected ~= nil then
     setPresence(selected)

@@ -54,6 +54,8 @@ type Daemon struct {
 	emit      *Emitter
 	quit      context.CancelFunc
 	player    *Player
+	recorder  *Recorder
+	picker    picker
 	downloads keyedLock
 
 	// lifecycle serializes Start, login and logout so clients are never swapped concurrently.
@@ -93,6 +95,7 @@ func NewDaemon(cfg Config, container *sqlstore.Container, msgs *MsgStore, emit *
 		emit:        emit,
 		quit:        quit,
 		player:      NewPlayer(emit),
+		recorder:    NewRecorder(emit, outboxDir(cfg.DataDir)),
 		nameLookups: map[string]bool{},
 		backfillAt:  map[string]time.Time{},
 
@@ -147,6 +150,9 @@ func ownJID(c *whatsmeow.Client) types.JID {
 func (d *Daemon) Start(ctx context.Context) error {
 	d.lifecycle.Lock()
 	defer d.lifecycle.Unlock()
+	if err := cleanOutbox(outboxDir(d.cfg.DataDir), outboxMaxAge, time.Now()); err != nil {
+		log.Printf("outbox cleanup: %v", err)
+	}
 	device, err := d.container.GetFirstDevice(ctx)
 	if err != nil {
 		return fmt.Errorf("load device: %w", err)
@@ -168,6 +174,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 
 func (d *Daemon) Stop() {
 	d.player.Stop()
+	d.recorder.Shutdown()
 	if c := d.getClient(); c != nil {
 		c.Disconnect()
 	}
@@ -847,6 +854,12 @@ func (d *Daemon) Handle(ctx context.Context, req Request) Response {
 	case "stop":
 		d.player.Stop()
 		return Response{OK: true}
+	case "pick":
+		return d.cmdPick(ctx)
+	case "paste":
+		return d.cmdPaste(ctx)
+	case "record":
+		return d.cmdRecord(req)
 	case "login":
 		return d.cmdLogin(ctx)
 	case "logout":
@@ -899,7 +912,40 @@ func (d *Daemon) connectedClient() (*whatsmeow.Client, types.JID, error) {
 	return c, me, nil
 }
 
+// buildReply returns the context info and the stored quote for a reply to
+// message id. Both are nil when id is empty.
+func (d *Daemon) buildReply(ctx context.Context, jid, me types.JID, id string) (*waE2E.ContextInfo, *Quote, error) {
+	if id == "" {
+		return nil, nil, nil
+	}
+	orig, found, err := d.store.Lookup(ctx, jid.String(), id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !found || orig.Deleted {
+		return nil, nil, errors.New("not_found")
+	}
+	participant := orig.From
+	if orig.Me {
+		participant = me.String()
+	}
+	ci := &waE2E.ContextInfo{
+		StanzaID:      proto.String(orig.ID),
+		Participant:   proto.String(participant),
+		QuotedMessage: &waE2E.Message{Conversation: proto.String(orig.Text)},
+	}
+	text, _ := clip(orig.Text, maxPreviewText)
+	quote := &Quote{ID: orig.ID, From: participant, Text: text, Kind: orig.Kind, Me: orig.Me}
+	if quote.Kind == "" {
+		quote.Kind = KindText
+	}
+	return ci, quote, nil
+}
+
 func (d *Daemon) cmdSend(ctx context.Context, req Request) Response {
+	if req.Media != "" {
+		return d.cmdSendMedia(ctx, req)
+	}
 	jid, err := d.parseChat(ctx, req.Chat)
 	if err != nil {
 		return fail(err)
@@ -915,33 +961,15 @@ func (d *Daemon) cmdSend(ctx context.Context, req Request) Response {
 		return fail(err)
 	}
 	outgoing := &waE2E.Message{Conversation: proto.String(req.Text)}
-	var quote *Quote
-	if req.Reply != "" {
-		orig, found, err := d.store.Lookup(ctx, jid.String(), req.Reply)
-		if err != nil {
-			return fail(err)
-		}
-		if !found || orig.Deleted {
-			return Response{Error: "not_found"}
-		}
-		participant := orig.From
-		if orig.Me {
-			participant = me.String()
-		}
+	ci, quote, err := d.buildReply(ctx, jid, me, req.Reply)
+	if err != nil {
+		return fail(err)
+	}
+	if ci != nil {
 		outgoing = &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
-			Text: proto.String(req.Text),
-			ContextInfo: &waE2E.ContextInfo{
-				StanzaID:      proto.String(orig.ID),
-				Participant:   proto.String(participant),
-				QuotedMessage: &waE2E.Message{Conversation: proto.String(orig.Text)},
-			},
+			Text:        proto.String(req.Text),
+			ContextInfo: ci,
 		}}
-		text, _ := clip(orig.Text, maxPreviewText)
-		quote = &Quote{ID: orig.ID, From: participant, Text: text, Kind: orig.Kind}
-		if quote.Kind == "" {
-			quote.Kind = KindText
-		}
-		quote.Me = orig.Me
 	}
 	sctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()

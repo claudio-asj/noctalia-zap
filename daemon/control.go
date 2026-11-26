@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,6 +32,9 @@ type Request struct {
 	Reply string `json:"reply,omitempty"`
 	// Before limits history to messages older than this unix time.
 	Before int64 `json:"before,omitempty"`
+	// Media is the absolute path of the file a send uploads; PTT sends audio as a voice note.
+	Media string `json:"media,omitempty"`
+	PTT   bool   `json:"ptt,omitempty"`
 	// Older makes backfill ask for messages older than the oldest stored.
 	Older bool `json:"older,omitempty"`
 }
@@ -167,7 +171,7 @@ func runCtl(socket string, args []string) int {
 		_ = os.Remove(req.File)
 		req.Text = string(b)
 	}
-	if err == nil && req.Cmd == "send" && req.Text == "-" {
+	if err == nil && req.Cmd == "send" && req.Media == "" && req.Text == "-" {
 		// Read the text from stdin so it does not show up in the process list.
 		var b []byte
 		b, err = io.ReadAll(io.LimitReader(os.Stdin, maxTextLength+1))
@@ -218,6 +222,10 @@ const ctlUsage = `commands:
   media <chat-jid> <msg-id>  (download if needed, print the file path)
   play <chat-jid> <msg-id>
   stop
+  pick                       (open the file chooser; the result comes as a picked event)
+  paste                      (save the clipboard image to the outbox, print its path)
+  record start|stop|cancel
+  send <chat-jid> --media <path> [--file <caption-file>] [--ptt] [--reply <msg-id>]
   login
   logout
   quit`
@@ -233,6 +241,15 @@ func parseCtlArgs(args []string) (Request, error) {
 		if len(rest) != 0 {
 			return req, fmt.Errorf("%s takes no arguments", req.Cmd)
 		}
+	case "pick", "paste":
+		if len(rest) != 0 {
+			return req, fmt.Errorf("%s takes no arguments", req.Cmd)
+		}
+	case "record":
+		if len(rest) != 1 || (rest[0] != "start" && rest[0] != "stop" && rest[0] != "cancel") {
+			return req, errors.New("usage: record start|stop|cancel")
+		}
+		req.Text = rest[0]
 	case "avatar":
 		if len(rest) != 1 {
 			return req, fmt.Errorf("usage: %s <chat-jid>", req.Cmd)
@@ -300,6 +317,9 @@ func parseCtlArgs(args []string) (Request, error) {
 			req.Limit = n
 		}
 	case "send":
+		if slices.Contains(rest, "--media") {
+			return parseSendMedia(req, rest)
+		}
 		if n := len(rest); n >= 4 && rest[n-2] == "--reply" {
 			if rest[n-1] == "" {
 				return req, errors.New("reply id is empty")
@@ -317,6 +337,43 @@ func parseCtlArgs(args []string) (Request, error) {
 		}
 	default:
 		return req, fmt.Errorf("unknown command %q", req.Cmd)
+	}
+	return req, nil
+}
+
+// parseSendMedia parses `send <chat-jid> --media <path> [--file <caption-file>] [--ptt] [--reply <id>]`.
+func parseSendMedia(req Request, rest []string) (Request, error) {
+	const usage = "usage: send <chat-jid> --media <path> [--file <caption-file>] [--ptt] [--reply <msg-id>]"
+	if len(rest) == 0 || strings.HasPrefix(rest[0], "--") {
+		return req, errors.New(usage)
+	}
+	req.Chat = rest[0]
+	rest = rest[1:]
+	for len(rest) > 0 {
+		flag := rest[0]
+		rest = rest[1:]
+		if flag == "--ptt" {
+			req.PTT = true
+			continue
+		}
+		if len(rest) == 0 || rest[0] == "" {
+			return req, errors.New(usage)
+		}
+		val := rest[0]
+		rest = rest[1:]
+		switch flag {
+		case "--media":
+			req.Media = val
+		case "--file":
+			req.File = val
+		case "--reply":
+			req.Reply = val
+		default:
+			return req, errors.New(usage)
+		}
+	}
+	if req.Media == "" {
+		return req, errors.New(usage)
 	}
 	return req, nil
 }

@@ -24,7 +24,10 @@ M.KEY_CHATS = "chats" -- list of chats, most recent first
 M.KEY_UNREAD = "unread" -- total unread messages
 M.KEY_DAEMON = "daemon" -- path of the noctalia-zapd binary, or nil when missing
 M.KEY_MESSAGES = "messages" -- { seq = number, items = { message } }: last live messages
-M.KEY_PLAYBACK = "playback" -- { chat, id, playing }: the audio player state
+M.KEY_PLAYBACK = "playback" -- { chat, id, playing, started_ms, seconds }: the audio player state
+M.KEY_PICKED = "picked" -- { path, cancelled, at }: answer of the file chooser
+M.KEY_RECORDING = "recording" -- { recording, started_ms, path, at }: the voice recorder
+M.KEY_SEND_FAILED = "sendFailed" -- { chat, error, at }: a send failed after ctl gave up
 M.KEY_BACKFILL = "backfill" -- { chat, at }: the phone resent a chat's history
 M.KEY_TYPING = "typing" -- { chat, from, name, state, at }: someone is typing
 -- Written by the panel:

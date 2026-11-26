@@ -196,7 +196,14 @@ func (d *Daemon) cmdPlay(ctx context.Context, req Request) Response {
 	if err != nil {
 		return fail(err)
 	}
-	if err := d.player.Play(jid.String(), req.ID, path); err != nil {
+	seconds := 0
+	if ref, found, err := d.store.MediaRef(ctx, jid.String(), req.ID); err == nil && found {
+		seconds = ref.Meta.Seconds
+	}
+	if seconds <= 0 {
+		seconds = probeSeconds(ctx, path)
+	}
+	if err := d.player.Play(jid.String(), req.ID, path, seconds); err != nil {
 		if errors.Is(err, errNoPlayer) {
 			return Response{Error: "no_player"}
 		}

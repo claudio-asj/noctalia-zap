@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os/exec"
 	"sync"
+	"time"
 )
 
 var errNoPlayer = errors.New("no_player")
@@ -41,6 +42,10 @@ type PlaybackEvent struct {
 	Chat  string `json:"chat"`
 	ID    string `json:"id"`
 	State string `json:"state"` // "playing" or "stopped"
+	// StartedMS and Seconds are set only while playing: when playback began
+	// (unix ms) and the duration in seconds, left out when unknown.
+	StartedMS int64 `json:"started_ms,omitempty"`
+	Seconds   int   `json:"seconds,omitempty"`
 }
 
 // stopCurrent kills the running process, if any, and waits until its
@@ -57,8 +62,9 @@ func (p *Player) stopCurrent() bool {
 	return true
 }
 
-// Play stops the current playback and starts a new one.
-func (p *Player) Play(chat, id, path string) error {
+// Play stops the current playback and starts a new one. seconds is the
+// duration of the audio, 0 when unknown.
+func (p *Player) Play(chat, id, path string, seconds int) error {
 	argv := playerArgv(path)
 	if argv == nil {
 		return errNoPlayer
@@ -77,7 +83,8 @@ func (p *Player) Play(chat, id, path string) error {
 		}
 		pb := &playback{cmd: cmd, chat: chat, id: id, done: make(chan struct{})}
 		p.cur = pb
-		p.emit.Emit(PlaybackEvent{Type: "playback", Chat: chat, ID: id, State: "playing"})
+		p.emit.Emit(PlaybackEvent{Type: "playback", Chat: chat, ID: id, State: "playing",
+			StartedMS: time.Now().UnixMilli(), Seconds: max(seconds, 0)})
 		p.mu.Unlock()
 		go func() {
 			_ = cmd.Wait()

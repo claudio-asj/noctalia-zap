@@ -259,7 +259,7 @@ Comandos:
   `ffmpeg -y -loglevel error -i <wav> -ac 1 -ar 48000 -c:a libopus -b:a 32k -application voip <ogg>`, apaga o wav,
   emite `{"type":"recording","state":"stopped"}` e responde com o caminho e a duração (ffprobe, ou pelo tempo
   gravado). `cancel`: mata, apaga, emite `stopped`. Para sozinho depois de 15 min (como `stop`, sem enviar, e emite
-  `stopped` com `"path"`). Erros: `no_recorder`, `no_ffmpeg`, `not_recording`, `already_recording`.
+  `stopped` com `"path"` e `"seconds"`). Erros: `no_recorder`, `no_ffmpeg`, `not_recording`, `already_recording`.
 - `send` com `media`: lê o arquivo (limite 100 MB → `too_large`), detecta o tipo (`http.DetectContentType` +
   extensão), faz `Upload` e monta:
   - `image/jpeg|png` (≤ 16 MB) → `ImageMessage` com `JPEGThumbnail` (máx. 100 px no lado maior), largura e altura;

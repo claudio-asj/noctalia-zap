@@ -254,6 +254,27 @@ local function onLine(line: string)
       chat = event.chat or "",
       id = event.id or "",
       playing = event.state == "playing",
+      started_ms = tonumber(event.started_ms) or 0,
+      seconds = tonumber(event.seconds) or 0,
+    })
+  elseif event.type == "picked" then
+    noctalia.state.set(common.KEY_PICKED, {
+      path = if type(event.path) == "string" then event.path else nil,
+      cancelled = event.cancelled == true,
+      at = noctalia.nowMs(),
+    })
+  elseif event.type == "recording" then
+    noctalia.state.set(common.KEY_RECORDING, {
+      recording = event.state == "recording",
+      started_ms = (tonumber(event.started) or noctalia.nowMs() / 1000) * 1000,
+      path = if type(event.path) == "string" then event.path else nil,
+      at = noctalia.nowMs(),
+    })
+  elseif event.type == "send_failed" then
+    noctalia.state.set(common.KEY_SEND_FAILED, {
+      chat = event.chat or "",
+      error = if type(event.error) == "string" then event.error else "",
+      at = noctalia.nowMs(),
     })
   end
 end

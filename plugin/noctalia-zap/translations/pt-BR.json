@@ -118,6 +118,23 @@
       "failed": "Não deu para baixar.",
       "not_stored": "Esta mídia foi guardada antes do suporte a downloads. Abra pelo celular.",
       "play_sound": "Tocar som"
+    },
+    "compose": {
+      "attach": "Anexar arquivo",
+      "paste": "Colar imagem",
+      "record": "Gravar áudio",
+      "remove": "Remover anexo",
+      "cancel_record": "Descartar gravação",
+      "send_record": "Enviar áudio",
+      "no_portal": "Sem seletor de arquivos. Instale o xdg-desktop-portal.",
+      "busy": "Já está em uso. Feche a outra janela antes.",
+      "no_wl_paste": "Instale o wl-clipboard para colar imagens.",
+      "no_image": "Não há imagem na área de transferência.",
+      "no_recorder": "Instale o pipewire para gravar áudio.",
+      "no_ffmpeg": "Instale o ffmpeg para gravar áudio.",
+      "too_large": "O arquivo é grande demais. O limite é 100 MB.",
+      "send_failed": "O arquivo não foi enviado.",
+      "failed": "Algo deu errado. Tente de novo."
     }
   },
   "settings": {
